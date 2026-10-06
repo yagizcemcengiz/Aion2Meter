@@ -1,0 +1,78 @@
+<Window x:Class="Aion2Meter.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Aion2Meter — Phase 1 Capture Diagnostics"
+        Width="920" Height="820" MinWidth="740" MinHeight="650"
+        Loaded="WindowLoaded" Closing="WindowClosing" Background="#F4F6FA">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="16,8" />
+            <Setter Property="Margin" Value="0,0,10,0" />
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+        </Style>
+    </Window.Resources>
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="Capture diagnostics" FontSize="26" FontWeight="SemiBold" />
+            <TextBlock Text="Phase 1 • Passive IP capture • Offline replay" Foreground="#536174" Margin="0,6,0,18" />
+        </StackPanel>
+        <StackPanel Grid.Row="1">
+            <TextBlock Text="Network Adapter:" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <DockPanel>
+                <Button x:Name="RefreshButton" DockPanel.Dock="Right" Content="Refresh Adapters" Click="RefreshClicked" Margin="12,0,0,0" />
+                <ComboBox x:Name="AdapterCombo" ItemsSource="{Binding Adapters}" DisplayMemberPath="DisplayName"
+                          SelectedItem="{Binding SelectedAdapter}" MinHeight="34" />
+            </DockPanel>
+            <TextBlock Text="{Binding SelectedAdapter.Details}" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"
+                       Foreground="#536174" Margin="0,10,0,12" />
+        </StackPanel>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,16">
+            <Button x:Name="StartButton" Content="Start Capture" Click="StartClicked" IsEnabled="False" />
+            <Button x:Name="StopButton" Content="Stop Capture" Click="StopClicked" IsEnabled="False" />
+        </StackPanel>
+        <Border Grid.Row="3" Background="White" Padding="14" CornerRadius="6">
+            <StackPanel>
+                <TextBlock Text="Status" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <TextBlock Text="{Binding NpcapStatus, StringFormat=Npcap: {0}}" />
+                <TextBlock Text="{Binding CaptureStatus, StringFormat=Capture: {0}}" />
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Foreground="#92400E" Margin="0,6,0,0" />
+            </StackPanel>
+        </Border>
+        <Border Grid.Row="4" Background="White" Padding="14" CornerRadius="6" Margin="0,12,0,12">
+            <StackPanel>
+                <TextBlock Text="Statistics" FontWeight="SemiBold" Margin="0,0,0,6" />
+                <UniformGrid Columns="3">
+                    <TextBlock Text="{Binding PacketsPerSecond, StringFormat=Packets/sec: {0:N1}}" />
+                    <TextBlock Text="{Binding TotalPackets, StringFormat=Total packets: {0:N0}}" />
+                    <TextBlock Text="{Binding TotalBytes, StringFormat=Total bytes: {0:N0}}" />
+                    <TextBlock Text="{Binding TcpCount, StringFormat=TCP: {0:N0}}" />
+                    <TextBlock Text="{Binding UdpCount, StringFormat=UDP: {0:N0}}" />
+                    <TextBlock Text="{Binding OtherCount, StringFormat=Other: {0:N0}}" />
+                </UniformGrid>
+                <TextBlock Text="{Binding DropSummary}" Foreground="#536174" FontSize="12" Margin="0,8,0,0" />
+            </StackPanel>
+        </Border>
+        <StackPanel Grid.Row="5" Margin="0,0,0,12">
+            <TextBlock Text="Capture directory:" FontWeight="SemiBold" />
+            <TextBox Text="{Binding CaptureDirectory, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" />
+            <TextBlock Text="Current File:" FontWeight="SemiBold" Margin="0,6,0,0" />
+            <TextBox Text="{Binding CurrentFile, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" />
+        </StackPanel>
+        <Grid Grid.Row="6">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <TextBlock Text="Diagnostic log • Last 100 messages" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding Logs}" FontFamily="Consolas" FontSize="12"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12" /></DataTemplate></ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+    </Grid>
+</Window>

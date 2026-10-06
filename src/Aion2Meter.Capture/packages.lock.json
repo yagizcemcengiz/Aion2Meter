@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "PacketDotNet": {
+        "type": "Direct",
+        "requested": "[1.4.8, )",
+        "resolved": "1.4.8",
+        "contentHash": "j4C4QaJmaPCk0KXsIdsZqmBteKWj5znXBmfbPpu48rE5SW2xwXKVlRf7C3g7VM9aZqMHIQedApEuC71nNX5PaQ=="
+      },
+      "SharpPcap": {
+        "type": "Direct",
+        "requested": "[6.3.1, )",
+        "resolved": "6.3.1",
+        "contentHash": "EWclXz+QdffBRppFR7GDBLyKiAz045RGvu4t4gcMGocVMEq6dRfCnAEx7Ep6qxcPPhH2kz13Y8FqBaHZhsh3Pg==",
+        "dependencies": {
+          "PacketDotNet": "1.4.8"
+        }
+      },
+      "aion2meter.core": {
+        "type": "Project"
+      }
+    }
+  }
+}

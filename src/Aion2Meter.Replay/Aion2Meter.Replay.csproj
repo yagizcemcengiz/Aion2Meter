@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Aion2Meter.Core/Aion2Meter.Core.csproj" />
+    <ProjectReference Include="../Aion2Meter.Capture/Aion2Meter.Capture.csproj" />
+  </ItemGroup>
+</Project>

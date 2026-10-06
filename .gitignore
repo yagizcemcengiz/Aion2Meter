@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+captures/
+*.pcap
+*.pcapng
+.vs/
+.idea/
+*.user
+*.suo
+TestResults/
+.tools/
+*.log
