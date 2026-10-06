@@ -11,7 +11,14 @@ public static class CaptureSessionFactory
         return collisionIndex == 0 ? stem + ".pcap" : stem + $"_{collisionIndex:D3}.pcap";
     }
 
-    public static CaptureSession Create(string directory, string adapterIdentifier, DateTimeOffset timestamp)
+    public static string SanitizeLabel(string? label)
+    {
+        if (string.IsNullOrWhiteSpace(label)) return "session";
+        var safe = new string(label.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '-').Take(80).ToArray()).Trim('-', '_');
+        return safe.Length == 0 ? "session" : safe;
+    }
+
+    public static CaptureSession Create(string directory, string adapterIdentifier, DateTimeOffset timestamp, string? label = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterIdentifier);
@@ -19,11 +26,15 @@ public static class CaptureSessionFactory
         Directory.CreateDirectory(directory);
         for (var index = 0; index < 10_000; index++)
         {
-            var path = Path.Combine(directory, FileName(timestamp, index));
+            var name = label is null ? FileName(timestamp, index)
+                : timestamp.UtcDateTime.ToString("yyyy-MM-dd_HHmmss", CultureInfo.InvariantCulture) + "_" + SanitizeLabel(label)
+                    + (index == 0 ? "" : $"_{index:D3}") + ".pcap";
+            var path = Path.Combine(directory, name);
+            if (File.Exists(Path.ChangeExtension(path, ".json"))) continue;
             try
             {
                 using var reservation = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                return new CaptureSession(path, adapterIdentifier, timestamp.ToUniversalTime());
+                return new CaptureSession(path, adapterIdentifier, timestamp.ToUniversalTime(), Guid.NewGuid());
             }
             catch (IOException) when (File.Exists(path)) { }
         }

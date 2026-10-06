@@ -16,7 +16,10 @@ public sealed record NetworkAdapter(
 public sealed record AdapterDiscoveryResult(bool NpcapReady, IReadOnlyList<NetworkAdapter> Adapters, string? Error = null);
 public interface IAdapterDiscovery { AdapterDiscoveryResult Discover(); }
 
-public sealed record CaptureSession(string FilePath, string AdapterIdentifier, DateTimeOffset StartedUtc);
+public sealed record CaptureSession(string FilePath, string AdapterIdentifier, DateTimeOffset StartedUtc, Guid SessionId = default)
+{
+    public string MetadataPath => Path.ChangeExtension(FilePath, ".json");
+}
 public sealed record DiagnosticMessage(DateTimeOffset TimestampUtc, string Level, string Message);
 
 public interface ICaptureEngine : IAsyncDisposable
@@ -28,5 +31,6 @@ public interface ICaptureEngine : IAsyncDisposable
     long QueueDroppedPackets { get; }
     long MetadataErrors { get; }
     Task StartAsync(NetworkAdapter adapter, string directory);
+    Task StartAsync(NetworkAdapter adapter, string directory, CaptureOptions options);
     Task StopAsync();
 }

@@ -3,6 +3,10 @@
 captures/
 *.pcap
 *.pcapng
+# Session metadata moved outside captures/ must also remain private.
+*.capture.json
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]_*.json*
+capture_*.json*
 .vs/
 .idea/
 *.user

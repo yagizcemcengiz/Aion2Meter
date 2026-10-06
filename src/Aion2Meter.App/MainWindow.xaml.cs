@@ -14,6 +14,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private readonly ICaptureEngine engine = new PassiveCaptureEngine();
     private readonly IAdapterDiscovery discovery = new AdapterDiscovery();
+    private readonly ProcessNetworkDiscovery processDiscovery = new();
+    private ProcessNetworkSnapshot processSnapshot = new([], [], []);
+    private NetworkProcess? selectedProcess;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(333) };
     private readonly Stopwatch rateClock = Stopwatch.StartNew();
     private long previousPackets;
@@ -37,6 +40,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<NetworkAdapter> Adapters { get; } = [];
     public ObservableCollection<string> Logs { get; } = [];
+    public ObservableCollection<NetworkProcess> Processes { get; } = [];
+    public ObservableCollection<ProcessNetworkEndpoint> Connections { get; } = [];
+    public NetworkProcess? SelectedProcess
+    {
+        get => selectedProcess;
+        set { selectedProcess = value; Notify(); UpdateConnections(); }
+    }
     public string CaptureDirectory { get; }
     public string NpcapStatus { get => npcapStatus; private set { npcapStatus = value; Notify(); } }
     public string CaptureStatus { get => captureStatus; private set { captureStatus = value; Notify(); } }
@@ -55,8 +65,42 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set { selectedAdapter = value; Notify(); UpdateControls(); }
     }
 
-    private async void WindowLoaded(object sender, RoutedEventArgs e) => await RefreshAsync();
+    private async void WindowLoaded(object sender, RoutedEventArgs e)
+    {
+        await RefreshAsync();
+        if (!closing) await RefreshProcessesAsync();
+    }
     private async void RefreshClicked(object sender, RoutedEventArgs e) => await RefreshAsync();
+    private async void ProcessRefreshClicked(object sender, RoutedEventArgs e) => await RefreshProcessesAsync();
+    private async void ConnectionsRefreshClicked(object sender, RoutedEventArgs e) => await RefreshProcessesAsync();
+
+    private async Task RefreshProcessesAsync()
+    {
+        busy = true;
+        UpdateControls();
+        try { ApplyProcessSnapshot(await Task.Run(processDiscovery.Refresh)); }
+        catch (Exception ex) { ShowError(ex); }
+        finally { busy = false; UpdateControls(); }
+    }
+
+    private void ApplyProcessSnapshot(ProcessNetworkSnapshot result)
+    {
+        var pid = SelectedProcess?.Pid;
+        processSnapshot = result;
+        Processes.Clear();
+        foreach (var process in result.Processes) Processes.Add(process);
+        SelectedProcess = Processes.FirstOrDefault(p => p.Pid == pid);
+        foreach (var warning in result.Warnings) AddLog("Warning", warning);
+        StatusMessage = pid is not null && SelectedProcess is null ? "The selected process has no current endpoints or has exited. Select a process again."
+            : $"Found {Processes.Count} network processes. Select a process manually; no game process is auto-selected.";
+    }
+
+    private void UpdateConnections()
+    {
+        Connections.Clear();
+        if (SelectedProcess is { } process)
+            foreach (var endpoint in processSnapshot.ForPid(process.Pid)) Connections.Add(endpoint);
+    }
 
     private async Task RefreshAsync()
     {
@@ -85,11 +129,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UpdateControls();
         try
         {
-            await engine.StartAsync(adapter, CaptureDirectory);
+            var mode = CaptureModeCombo.SelectedIndex == 1 ? CaptureMode.SelectedProcessTraffic : CaptureMode.AllTraffic;
+            var label = SessionLabelBox.Text;
+            var notes = UserNotesBox.Text;
+            NetworkProcess? process = null;
+            IReadOnlyList<ProcessNetworkEndpoint> endpoints = [];
+            if (mode == CaptureMode.SelectedProcessTraffic)
+            {
+                var pid = SelectedProcess?.Pid ?? throw new InvalidOperationException("Select a network process first.");
+                // Refresh at start, outside the packet callback and off the UI thread.
+                var result = await Task.Run(processDiscovery.Refresh);
+                ApplyProcessSnapshot(result);
+                process = result.Processes.FirstOrDefault(p => p.Pid == pid)
+                    ?? throw new InvalidOperationException("The selected process exited or has no endpoints. Refresh processes.");
+                endpoints = result.ForPid(pid);
+            }
+            await engine.StartAsync(adapter, CaptureDirectory, new(mode, label, process?.Pid, process?.ProcessName, endpoints, notes));
             previousPackets = 0;
             previousSeconds = rateClock.Elapsed.TotalSeconds;
             lastDropped = lastMetadataErrors = 0;
-            StatusMessage = "Capturing IP traffic. Capture files contain private network data.";
+            StatusMessage = mode == CaptureMode.AllTraffic ? "Capturing all IP traffic on the selected adapter. Capture files contain private network data."
+                : "Capturing a fixed IP/port/protocol snapshot, not PID-isolated traffic. Shared endpoints may match other processes.";
         }
         catch (Exception ex) { ShowError(ex); }
         finally { busy = false; UpdateStatistics(); UpdateControls(); }
@@ -131,7 +191,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void UpdateControls()
     {
         if (!IsInitialized) return;
-        RefreshButton.IsEnabled = AdapterCombo.IsEnabled = !busy && !closing && !engine.IsRunning;
+        var editable = !busy && !closing && !engine.IsRunning;
+        RefreshButton.IsEnabled = AdapterCombo.IsEnabled = editable;
+        ProcessRefreshButton.IsEnabled = ConnectionsRefreshButton.IsEnabled = ProcessCombo.IsEnabled = editable;
+        CaptureModeCombo.IsEnabled = SessionLabelBox.IsEnabled = UserNotesBox.IsEnabled = editable;
         StartButton.IsEnabled = !busy && !closing && !engine.IsRunning && npcapReady && SelectedAdapter is not null;
         StopButton.IsEnabled = !busy && !closing && engine.IsRunning;
     }

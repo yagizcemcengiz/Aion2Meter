@@ -20,6 +20,8 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
     private int running, stopping;
     private CaptureSession? faultedSession;
     private bool disposed;
+    private SessionMetadata? sessionMetadata;
+    private bool sessionFaulted;
 
     public event Action<DiagnosticMessage>? Diagnostic;
     public bool IsRunning => Volatile.Read(ref running) != 0;
@@ -28,26 +30,48 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
     public long QueueDroppedPackets => Interlocked.Read(ref queueDropped);
     public long MetadataErrors => Interlocked.Read(ref metadataErrors);
 
-    public async Task StartAsync(NetworkAdapter adapter, string directory)
+    public Task StartAsync(NetworkAdapter adapter, string directory) => StartAsync(adapter, directory, new CaptureOptions());
+
+    public async Task StartAsync(NetworkAdapter adapter, string directory, CaptureOptions options)
     {
         ArgumentNullException.ThrowIfNull(adapter);
+        ArgumentNullException.ThrowIfNull(options);
         await lifecycle.WaitAsync().ConfigureAwait(false);
         var startAttempted = false;
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             if (IsRunning) throw new InvalidOperationException("Capture is already running.");
+            var filter = "ip or ip6";
+            if (options.Mode == CaptureMode.SelectedProcessTraffic)
+            {
+                if (options.SelectedPid is not > 0) throw new ArgumentException("Select a valid process first.");
+                options = options with { ConnectionsAtStart = options.ConnectionsAtStart?.ToArray() ?? [] };
+                if (options.ConnectionsAtStart.Any(e => e.Pid != options.SelectedPid))
+                    throw new ArgumentException("Connections must belong to the selected PID.");
+                var result = CaptureFilterBuilder.Build(options.ConnectionsAtStart, adapter.IPv4Addresses.Concat(adapter.IPv6Addresses).ToArray());
+                if (!result.Success) throw new InvalidOperationException(result.Error);
+                filter = result.Filter!;
+                foreach (var warning in result.Warnings) Log("Warning", warning);
+            }
+            else if (options.Mode == CaptureMode.AllTraffic)
+                options = options with { SelectedPid = null, SelectedProcessName = null, ConnectionsAtStart = [] };
+            else throw new ArgumentException("Unknown capture mode.");
+            Log("Info", $"BPF filter: {filter}");
             startAttempted = true;
             statistics.Reset();
             Interlocked.Exchange(ref queueDropped, 0);
             Interlocked.Exchange(ref metadataErrors, 0);
             Volatile.Write(ref stopping, 0);
             Session = null;
-            await Task.Run(() => StartCore(adapter, directory)).ConfigureAwait(false);
-            Log("Info", $"Capture started: {Session!.FilePath}. Filter: ip or ip6; promiscuous mode disabled.");
+            sessionMetadata = null;
+            sessionFaulted = false;
+            await Task.Run(() => StartCoreAsync(adapter, directory, options, filter)).ConfigureAwait(false);
+            Log("Info", $"Capture started: {Session!.FilePath}; promiscuous mode disabled.");
         }
         catch (Exception ex) when (startAttempted)
         {
+            sessionFaulted = true;
             try { await StopCoreAsync().ConfigureAwait(false); }
             catch (Exception cleanup) { Log("Error", $"Capture cleanup: {cleanup.Message}"); }
             if (AdapterDiscovery.IsNativeLoadFailure(ex))
@@ -57,7 +81,7 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
         finally { lifecycle.Release(); }
     }
 
-    private void StartCore(NetworkAdapter adapter, string directory)
+    private async Task StartCoreAsync(NetworkAdapter adapter, string directory, CaptureOptions options, string filter)
     {
         if (adapter.Identifier.StartsWith("rpcap", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Only local capture adapters are supported.");
@@ -68,8 +92,11 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
             Mode = DeviceModes.None, ReadTimeout = 500, Snaplen = SnapshotLength,
             TimestampResolution = TimestampResolution.Microsecond
         });
-        device.Filter = "ip or ip6";
-        Session = CaptureSessionFactory.Create(directory, adapter.Identifier, DateTimeOffset.UtcNow);
+        try { device.Filter = filter; }
+        catch (Exception ex) { throw new InvalidOperationException("Npcap could not compile the endpoint filter. Refresh connections or choose another adapter.", ex); }
+        Session = CaptureSessionFactory.Create(directory, adapter.Identifier, DateTimeOffset.UtcNow, options.SessionLabel);
+        sessionMetadata = SessionMetadata.Create(Session, adapter, options, filter);
+        await SessionMetadataStore.WriteAsync(Session.MetadataPath, sessionMetadata).ConfigureAwait(false);
         writer = new CaptureFileWriterDevice(Session.FilePath, FileMode.Open);
         writer.Open(new DeviceConfiguration
         {
@@ -137,6 +164,7 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
         {
             if (!ReferenceEquals(Session, session) || ReferenceEquals(faultedSession, session)) return;
             faultedSession = session;
+            sessionFaulted = true;
         }
         Log("Error", error);
         _ = Task.Run(async () =>
@@ -189,6 +217,13 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
         queue = null;
         processing = null;
         Volatile.Write(ref running, 0);
+        if (hadResources && Session is { } savedSession && sessionMetadata is { } metadata)
+        {
+            sessionMetadata = metadata.Finish(DateTimeOffset.UtcNow, Statistics, QueueDroppedPackets, MetadataErrors,
+                sessionFaulted || errors.Count > 0 ? "Faulted" : "Completed");
+            try { await SessionMetadataStore.WriteAsync(savedSession.MetadataPath, sessionMetadata).ConfigureAwait(false); }
+            catch (Exception ex) { errors.Add(ex); }
+        }
         if (hadResources && errors.Count == 0)
             Log("Info", $"Capture stopped; file closed. Saved={Statistics.TotalPackets}, queue dropped={QueueDroppedPackets}, metadata errors={MetadataErrors}.");
         if (errors.Count > 0) throw new AggregateException("Capture shutdown encountered an error; check the capture file.", errors);
