@@ -26,6 +26,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private NetworkAdapter? selectedAdapter;
     private string npcapStatus = "Checking", captureStatus = "Stopped", statusMessage = "", currentFile = "—";
     private StatisticsSnapshot snapshot = new(0, 0, 0, 0, 0, null, null);
+    private CancellationTokenSource? cueCancellation;
+    private Task cueTask = Task.CompletedTask;
+    private string countdownStatus = "Visual cue only. Perform the game action manually; cue time is not cast time.";
 
     public MainWindow()
     {
@@ -52,6 +55,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public string CaptureStatus { get => captureStatus; private set { captureStatus = value; Notify(); } }
     public string StatusMessage { get => statusMessage; private set { statusMessage = value; Notify(); } }
     public string CurrentFile { get => currentFile; private set { currentFile = value; Notify(); } }
+    public string CountdownStatus { get => countdownStatus; private set { countdownStatus = value; Notify(); } }
     public double PacketsPerSecond { get; private set; }
     public long TotalPackets => snapshot.TotalPackets;
     public long TotalBytes => snapshot.TotalBytes;
@@ -157,6 +161,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void StopClicked(object sender, RoutedEventArgs e)
     {
+        cueCancellation?.Cancel();
         busy = true;
         UpdateControls();
         try { await engine.StopAsync(); StatusMessage = "Capture stopped. File closed and ready for offline replay."; }
@@ -164,8 +169,47 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         finally { busy = false; UpdateStatistics(); UpdateControls(); }
     }
 
+    private void CountdownClicked(object sender, RoutedEventArgs e)
+    {
+        if (closing || busy || cueCancellation is not null || !engine.IsRunning || engine.Session is not { } session) return;
+        cueTask = RunCountdownAsync(session);
+    }
+
+    private async Task RunCountdownAsync(CaptureSession session)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cueCancellation = cancellation;
+        UpdateControls();
+        var started = DateTimeOffset.UtcNow;
+        var clock = Stopwatch.StartNew();
+        var scheduled = started.AddSeconds(10);
+        try
+        {
+            while (clock.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (!engine.IsRunning || engine.Session?.SessionId != session.SessionId) throw new OperationCanceledException();
+                CountdownStatus = $"Manual action cue in {Math.Max(0, 10 - clock.Elapsed.TotalSeconds):F1}s";
+                var remaining = TimeSpan.FromSeconds(10) - clock.Elapsed;
+                if (remaining > TimeSpan.Zero) await Task.Delay(remaining < TimeSpan.FromMilliseconds(50) ? remaining : TimeSpan.FromMilliseconds(50), cancellation.Token);
+            }
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!engine.IsRunning || engine.Session?.SessionId != session.SessionId) throw new OperationCanceledException();
+            var timestamp = DateTimeOffset.UtcNow;
+            var delay = Math.Max(0, clock.Elapsed.TotalMilliseconds - 10_000);
+            CountdownStatus = "CUE NOW — perform your action manually. Saving UserActionCue…";
+            await engine.RecordUserActionCueAsync(session.SessionId, scheduled, timestamp, delay);
+            CountdownStatus = $"UserActionCue saved at {timestamp:HH:mm:ss.fff} UTC (scheduler delay {delay:F1}ms). This is not the actual cast timestamp.";
+            AddLog("Info", $"UserActionCue saved; relative time {(timestamp - session.StartedUtc).TotalSeconds:F6}s.");
+        }
+        catch (OperationCanceledException) { CountdownStatus = "Countdown cancelled; no cue recorded."; }
+        catch (Exception ex) { CountdownStatus = "Cue metadata was not saved. Check the diagnostic error."; ShowError(ex); }
+        finally { cueCancellation = null; UpdateControls(); }
+    }
+
     private void UpdateStatistics()
     {
+        if (!engine.IsRunning) cueCancellation?.Cancel();
         snapshot = engine.Statistics;
         var now = rateClock.Elapsed.TotalSeconds;
         var elapsed = now - previousSeconds;
@@ -197,6 +241,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CaptureModeCombo.IsEnabled = SessionLabelBox.IsEnabled = UserNotesBox.IsEnabled = editable;
         StartButton.IsEnabled = !busy && !closing && !engine.IsRunning && npcapReady && SelectedAdapter is not null;
         StopButton.IsEnabled = !busy && !closing && engine.IsRunning;
+        CountdownButton.IsEnabled = !busy && !closing && engine.IsRunning && cueCancellation is null;
     }
 
     private void OnDiagnostic(DiagnosticMessage message)
@@ -234,9 +279,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         e.Cancel = true;
         if (closing) return;
         closing = true;
+        cueCancellation?.Cancel();
         UpdateControls();
         timer.Stop();
         while (busy) await Task.Delay(50);
+        await cueTask;
         try { await engine.DisposeAsync(); }
         catch (Exception ex)
         {

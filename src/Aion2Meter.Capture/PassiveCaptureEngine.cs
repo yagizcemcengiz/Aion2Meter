@@ -187,6 +187,24 @@ public sealed class PassiveCaptureEngine : ICaptureEngine
         finally { lifecycle.Release(); }
     }
 
+    public async Task RecordUserActionCueAsync(Guid sessionId, DateTimeOffset scheduledUtc, DateTimeOffset timestampUtc, double schedulingDelayMilliseconds)
+    {
+        await lifecycle.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (!IsRunning || Session is not { } session || session.SessionId != sessionId || sessionMetadata is not { } metadata)
+                throw new InvalidOperationException("A cue can only be saved to the same running capture session.");
+            if (metadata.TestMarkers.Count >= 1000) throw new InvalidOperationException("Session marker limit reached (1000).");
+            var marker = TestMarker.UserActionCue(session.StartedUtc, scheduledUtc, timestampUtc, schedulingDelayMilliseconds);
+            var updated = metadata with { TestMarkers = [.. metadata.TestMarkers, marker] };
+            // Same lifecycle lock as Stop: final metadata cannot overwrite a successfully saved cue.
+            await SessionMetadataStore.WriteAsync(session.MetadataPath, updated).ConfigureAwait(false);
+            sessionMetadata = updated;
+        }
+        finally { lifecycle.Release(); }
+    }
+
     private async Task StopCoreAsync()
     {
         var hadResources = device is not null || writer is not null;

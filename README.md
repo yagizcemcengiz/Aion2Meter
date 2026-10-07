@@ -1,6 +1,6 @@
-# Aion2Meter — Phase 2
+# Aion2Meter — Phase 3A
 
-Windows üzerinde AION 2 için ileride geliştirilebilecek bir DPS meter'ın **pasif capture, process endpoint discovery ve offline flow analiz altyapısıdır**. Bu sürümde DPS hesaplama, AION 2 application protocol decoding, combat parser veya overlay yoktur. Otomatik testler için oyunu açmanız gerekmez.
+Windows üzerinde AION 2 için ileride geliştirilebilecek bir DPS meter'ın **pasif capture, process endpoint discovery ve offline protocol research altyapısıdır**. Phase 3A, seçilen TCP bağlantısında zaman çizelgesi, sınırlı ham byte incelemesi, sequence karşılaştırması ve stream ordering sağlar. Bu sürümde DPS hesaplama, AION 2 application protocol decoding, combat parser veya overlay yoktur. Otomatik testler için oyunu açmanız gerekmez.
 
 ## Gereksinimler
 
@@ -17,7 +17,7 @@ Aion2Meter.sln
 src/
   Aion2Meter.Core/       Endpoint/filter/session modelleri, metadata JSON, flow ve packet-size sayaçları
   Aion2Meter.Capture/    Windows IP Helper discovery, SharpPcap pasif capture ve pcap writer
-  Aion2Meter.Replay/     Npcap gerektirmeyen offline okuyucu, flow analizi ve capture karşılaştırması
+  Aion2Meter.Replay/     Npcap gerektirmeyen offline flow analizi, protocol research ve TCP stream araçları
   Aion2Meter.App/        WPF diagnostic ekranı
 tests/
   Aion2Meter.Tests/      Deterministic unit testler ve offline native writer testi
@@ -210,3 +210,96 @@ Yeni/kaybolan **remote endpoint** ayrımı için her iki capture yanında aynı 
 - **TEST F:** `dotnet run --project src/Aion2Meter.Replay -- compare "<aion-idle.pcap>" "<aion-single-earth-retribution.pcap>"` çalıştırın. İki JSON'u PCAP'lerin yanında tutun; trafik farklarını inceleyin, payload decode etmeyin.
 
 Unit suite native Windows table byte layout'larını, IPv4/IPv6 TCP/UDP mapping, process name access-denied/exited fallback, filter sınırlarını, session sanitization/JSON, flow aggregation/sorting/sizes ve comparison/CLI davranışını sentetik verilerle doğrular. Yeni unit testler Npcap veya gerçek AION 2 gerektirmez. Gerçek adaptör/game session davranışı manuel checklist ile ayrıca doğrulanmalıdır.
+
+## Phase 3A — offline protocol research
+
+Research komutu sadece mevcut **classic PCAP** dosyasını okur; Npcap/oyun/network erişimi gerekmez. PCAPNG desteklenmez. `--local` ve `--remote` sayısal IP:port olmalıdır; IPv6 için `[2001:db8::1]:12345` kullanın. Yalnızca bu exact TCP dört-tuple'ın iki yönü seçilir. Aşağıdaki örnek IP'ler dokümantasyon adresleridir; kendi capture endpoint'lerinizi kullanın.
+
+Workspace kökünde PowerShell örnekleri (satır devamı için backtick):
+
+```powershell
+$capture = "captures/session-a.pcap"
+$endpoints = @("--local", "192.0.2.1:12345", "--remote", "198.51.100.2:443")
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --timeline --from 11.5 --to 14.5
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --payload --frame-lengths 57,61,92,59 --max-payload-bytes 64
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --timeline --frame-length 57 --direction out
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --payload --payload-length 3 --max-packets 100
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --sequence 57,61,92 --sequence-window-ms 20 --direction out
+
+dotnet run --project src/Aion2Meter.Replay -- research compare `
+  "captures/idle.pcap" "captures/session-a.pcap" "captures/session-b.pcap" "captures/session-c.pcap" `
+  @endpoints --sequence 57,61,92 --sequence-window-ms 20 --direction out
+
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --streams --direction out --stream-offset 0 --stream-bytes 64
+
+# Genel ham hex pattern araması; chunk sınırını geçebilir, gap'i geçemez.
+dotnet run --project src/Aion2Meter.Replay -- research $capture @endpoints `
+  --streams --stream-pattern AABBCC --from 11.5 --to 14.5
+
+dotnet run --project src/Aion2Meter.Replay -- research --help
+```
+
+PowerShell array splatting `@endpoints` ortak endpoint seçeneklerini aktarır. Bash `\` satır devamı kullanmayın. Default komut bağlantı/filter sayaçlarını gösterir; byte dump için açıkça `--payload` veya `--streams` gerekir. `--direction out|in|both` yön seçer; default `both`.
+
+### Timeline, payload ve filtreler
+
+- `--timeline`: orijinal dosyada **1-based packet index**, UTC timestamp, relative seconds, yön, captured frame length, IP/TCP header'lardan hesaplanan declared payload length, available payload bytes, sequence/acknowledgment ve TCP flags. Sıra timestamp, eşitlikte orijinal index'tir. `ACK-only`, control/no-payload, payload ve `TRUNCATED` ayrıdır. ACK-only, payload'sız ve yalnız ACK flag'i olan segmenttir.
+- Relative time için aynı basename `.json` içindeki `StartedUtc` kullanılır. Metadata yok/bozuksa tüm PCAP'in en erken timestamp'i kullanılır ve origin çıktıda belirtilir; bu durumda zamanlar gerçek session başlangıcıyla birebir olmayabilir. `--from`/`--to` inclusive relative seconds'tir, decimal ayırıcı `.` olmalıdır. Metadata başlangıcından önce timestamp bulunan packet negatif relative time gösterebilir.
+- `--frame-length N` veya `--frame-lengths CSV` **captured frame length** filtreler. `--payload-length N` declared TCP application-byte uzunluğunu filtreler. Header/options/VLAN/padding payload değildir. Truncated capture'da declared ve available ayrı gösterilir; eksik byte'lar üretilmez. Frame-length filtresi tek başına da timeline satırlarını açar.
+- `--payload` tek başına yalnız declared payload taşıyan paketleri listeler; `--timeline --payload` birlikte ACK/control satırlarını da tutar, dump'ı yalnız payload için gösterir. Hex ve printable ASCII default **64 byte/packet**, `--max-payload-bytes 1..4096` ile artırılabilir. Default en çok **200 satır/match**, `--max-packets 1..10000` ile değişir; eksiltilen satır sayısı belirtilir.
+- Ethernet/VLAN, raw IP, NULL/loopback ve Linux cooked SLL/SLL2 ile IPv4/IPv6 TCP okunur. IPv6 standart extension header'ları geçilir. IP fragment reassembly, IPv6 jumbogram ve başka link type'lar desteklenmez; unsupported/bozuk header sayaçları **tüm dosya** içindir. Connection'a atanamayan paketler selected stream'e katılmaz.
+
+### Sequence ve byte karşılaştırması
+
+`--sequence CSV`, her yönün timestamp sırasındaki **ardışık frame-length** dizisini arar. Ters yöndeki paketler araya girebilir, aynı yöndeki başka bir frame (ACK-only dahil) eşleşmeyi keser. Overlapping matches desteklenir. `--sequence-window-ms` ilk-son packet arasındaki **toplam süreyi** sınırlar; default 20ms, sınır inclusive. Pattern generic'tir; herhangi bir oyun/skill'e atanmaz.
+
+Arama time/direction filtresinden sonra yapılır. Length filtreleriyle `--sequence` birlikte reddedilir; aksi takdirde aradaki paketleri silip yapay adjacency üretmek mümkün olurdu. Her match başlangıç UTC/relative time, original packet indices, direction, captured lengths, payload lengths ve total elapsed time gösterir.
+
+`research compare` 2–16 dosya ve `--sequence` ister. Her capture'daki **tüm match'ler**, aynı yön ve sequence pozisyonu için sample olarak karşılaştırılır; ilk eşleşme seçilip diğerleri atılmaz. Match olmayan dosya açıkça count=0 gösterir. Sample length'leri, common prefix/suffix ve tamamen aynı/değişen offset aralıkları raporlanır. Byte offset'ler **0-based payload-relative**, aralık sonları inclusive'dir. Common suffix sample sonuna göredir; prefix ile çakışmaz. Eşit payload'larda tüm uzunluk prefix'tir, suffix=0. Daha kısa sample'daki eksik byte `--` ve farklı sayılır. Truncated sample bulunan pozisyonda karşılaştırma yapılmaz.
+
+Byte diff default ilk 64 offset ve ilk 16 sample sütununu gösterir; `--max-payload-bytes` offset/range limitini değiştirir. Summary tüm sample/byte'ları içerir; gösterilmeyen satır/sütun/range belirtilir. Bir dosyada birden çok match olabildiği için sample başlıkları `filename#match-number` içerir. Değişen byte'lara field/gameplay anlamı atanmaz.
+
+### Offline TCP stream yaklaşımı ve sınırları
+
+Her yön bağımsızdır. Payload sequence için SYN'in tükettiği sequence slot dikkate alınır ([TCP RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html)). Sequence numarası sıralaması 32-bit wrap'ı destekler, gözlenen sequence span **2 GiB'den küçük** olmalıdır; belirsiz span reddedilir. ACK-only/control packets byte eklemez. Out-of-order segment'ler sequence konumuna yerleşir. Aynı byte'ın retransmission/duplicate kopyası eklenmez; partial overlap'ın yeni kısmı tutulur. Çelişen overlap'ta **en erken timestamp, eşitlikte en küçük dosya index'i** kazanır; çelişen offset aralıkları raporlanır. Bu deterministik araştırma politikası, uzak TCP alıcısının aynı byte'ları seçtiğini kanıtlamaz.
+
+Stream offset 0 en düşük **gözlenen payload sequence**'dir; midstream capture'da bağlantının gerçek başlangıcı değildir. `SYNobserved` yalnız seçilen zaman penceresindeki SYN'i bildirir. Missing/truncated sequence bölgeleri gap olarak kalır; iki tarafındaki bytes birbirine yapıştırılmaz. `--stream-offset`/`--stream-bytes` belirli offset penceresini (default 0/64, en çok 4096 bytes) gösterir. Her range, kaynak packet index ve yaklaşık capture timestamp taşır; bu application event zamanı değildir. Stream, length presentation filtresinden bağımsız, time/direction penceresinde oluşur. Bu nedenle yalnız frame filtresinin seçtiği paketleri birleştirmez.
+
+`--stream-pattern HEX`, 1–64 byte literal'ini bitişik byte stream'de arar; chunk sınırını geçebilir, gap'te state sıfırlanır. Overlapping occurrences dahildir. Bu işlem message framing veya sayı/field decoding yapmaz. Byte entropy ve printable ASCII oranı yalnız descriptive ölçümlerdir; encrypted/compressed olduklarını veya plaintext field anlamlarını kanıtlamaz.
+
+Birden fazla farklı SYN sequence origin'i aynı dört-tuple içinde görülürse stream birleştirme reddedilir; tek connection epoch için zaman penceresi seçin. Capture SYN'i içermiyorsa tuple reuse kesin ayırt edilemez. Araç full TCP stack değildir: connection lifecycle/ACK/SACK doğrulaması, IP fragment birleştirme, eksik byte kurtarma ve application message framing yapmaz.
+
+Her dosyada en çok 250000 seçilen packet / 64 MiB payload, compare toplamında 500000 packet / 128 MiB payload, 100000 sequence sample, stream yönü başına 100000 ham overlap conflict range ve 1000000 stream-pattern occurrence kabul edilir. Sınır aşımı açık hatadır; analysis sessizce kesilmez. Küçük capture/time window kullanın (dosya payload okuma limiti time window'dan önce uygulanır).
+
+### Privacy ve araştırma sınırları
+
+Research çıktısı **yalnız console'a** yazılır, dosya oluşturmaz. Credentials/auth lexical işaretleri ve JWT benzeri diziler için tüm packet payload'ları ve bitişik stream (display window dışı dahil) kontrol edilir. Saptanan yönde payload preview, stream hex/pattern ve ilgili byte comparison bastırılır; credential/token çıkarılmaz. Stream güvenilir şekilde kontrol edilemiyorsa byte çıktısı konservatif olarak bastırılır. Bu bir heuristic'tir; bilinmeyen binary formatlarda gizli verinin yokluğunu garanti etmez.
+
+`captures/`, PCAP/PCAPNG ve session metadata ignore edilmeye devam eder. CLI çıktısını elle yönlendirirseniz yalnız `captures/` altında tutun; **payload dump'larını Git'e eklemeyin**. Repo'ya gerçek capture, capture-derived fixtures veya ham research output eklenmez. Synthetic test fixtures çalışma sırasında geçici ignored build dizininde oluşur ve temizlenir.
+
+Kavramlar ayrı tutulur: **Network Packet → TCP Byte Stream → Application Message → Combat Event → Skill Cast**. Henüz application framing bilinmiyor; bu oklar 1:1 eşleme anlamına gelmez. Bir cast tek packet, bir packet tek combat event veya Earth's Retribution iki hit varsayımı yoktur. Üç controlled session'da kullanıcı skill'i bir kez kullandığını bildirmiştir; diğer gözlenen combat sayıları passive/proc/periodic/equipment vb. etkiler olabilir. Ekran gözlemleri decoded network fact değildir. Yaklaşık capture+10s manuel cast bilgisi frame-accurate timestamp değildir. Görülen damage sayıları payload içinde aranmaz; endian brute force/field ataması yapılmaz.
+
+Phase 3A yalnız offline evidence toplar. Network replay/injection/modification, game input automation, memory/DLL/process/API/DirectX hooks, anti-cheat etkileşimi, TLS interception, decryption/key discovery ve production combat parser/DPS engine içermez.
+
+## Controlled test için görsel cue
+
+Capture zaten Running iken **Start 10s Test Countdown** düğmesine basın. Diagnostic app 10 saniye geri sayıp **CUE NOW** gösterir. Kullanıcı oyundaki aksiyonu elle yapar. Cue görsel olduğu için diagnostic pencere görünür olmalıdır; beep ve game input/hook yoktur.
+
+Countdown monotonic Stopwatch ile 10.000 saniye deadline hedefler; Windows/UI scheduler nedeniyle **tam 10.000s görünürlük garantisi yoktur**. Metadata'daki `TestMarkers` listesine `MarkerType="UserActionCue"`, `MarkerId`, `ScheduledUtc`, gözlenen `TimestampUtc`, session başlangıcına göre `RelativeSeconds` ve monotonic `SchedulingDelayMilliseconds` yazılır. Timestamp, UI cue state'inin hazırlandığı zamandır; ekranın fiziksel refresh anı veya kullanıcının reaction/cast anı değildir. Wall-clock değişikliği UTC/relative time'ı etkileyebilir; scheduler delay monotonic ölçülür.
+
+Stop, pencere kapanışı veya capture fault countdown'u iptal eder. Marker yalnız aynı running SessionId'ye, Stop ile aynı lifecycle lock altında atomik metadata update olarak kaydedilir; son metadata yazımı başarılı marker'ı korur. Save hatası UI/log'da açıkça belirtilir. Session başına 1000 marker sınırı vardır. Eski JSON'larda `TestMarkers` eksikse boş liste olarak okunur; mevcut capture/metadata dosyaları değiştirilmez.
+
+Synthetic testler timeline/ACK/payload/options/padding/IPv6/link headers, time/frame filters, sequence/timing, prefix/suffix/diff, retransmission/out-of-order/overlap/gap/wrap, stream pattern, bounded CLI/privacy ve cue metadata round-trip/backward compatibility'yi doğrular. Countdown'un canlı UI görünürlüğü ve manuel reaction korelasyonu ayrıca kullanıcı tarafından test edilmelidir.

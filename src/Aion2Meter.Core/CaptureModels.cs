@@ -33,4 +33,5 @@ public interface ICaptureEngine : IAsyncDisposable
     Task StartAsync(NetworkAdapter adapter, string directory);
     Task StartAsync(NetworkAdapter adapter, string directory, CaptureOptions options);
     Task StopAsync();
+    Task RecordUserActionCueAsync(Guid sessionId, DateTimeOffset scheduledUtc, DateTimeOffset timestampUtc, double schedulingDelayMilliseconds);
 }

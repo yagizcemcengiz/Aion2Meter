@@ -7,10 +7,12 @@ namespace Aion2Meter.Replay;
 public static class Program
 {
     private const string Usage = "Usage: dotnet run --project src/Aion2Meter.Replay -- <capture.pcap> [--dump 20] [--flows] [--top-flows 20] [--sizes]\n" +
-        "       dotnet run --project src/Aion2Meter.Replay -- compare <captureA.pcap> <captureB.pcap>";
+        "       dotnet run --project src/Aion2Meter.Replay -- compare <captureA.pcap> <captureB.pcap>\n" +
+        "       dotnet run --project src/Aion2Meter.Replay -- research --help";
 
     public static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "research") return Research.ResearchCli.Run(args[1..]);
         if (args.Length == 0 || args[0] is "--help" or "-h")
         {
             Console.Error.WriteLine(Usage);

@@ -15,6 +15,8 @@ public sealed record SessionMetadata(Guid SessionId, string SessionLabel, DateTi
     string BpfFilter, long TotalPackets, long TotalBytes, long TcpPackets, long UdpPackets, long OtherPackets,
     string? UserNotes, long QueueDroppedPackets = 0, long MetadataErrors = 0, string Status = "Running")
 {
+    public IReadOnlyList<TestMarker> TestMarkers { get; init; } = [];
+
     public static SessionMetadata Create(CaptureSession session, NetworkAdapter adapter, CaptureOptions options, string filter) =>
         new(session.SessionId, CaptureSessionFactory.SanitizeLabel(options.SessionLabel), session.StartedUtc, null, TimeSpan.Zero,
             new(adapter.Identifier, adapter.FriendlyName, adapter.Description,
