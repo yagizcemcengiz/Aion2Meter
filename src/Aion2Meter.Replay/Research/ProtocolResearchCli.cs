@@ -8,12 +8,12 @@ namespace Aion2Meter.Replay.Research;
 
 public static class ProtocolResearchCli
 {
-    private const string Usage = "research decode|containers <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
+    private const string Usage = "research decode|containers|identities|id-graph|skills <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
         "With no endpoints, requires exactly one TCP port-13328 connection in companion session metadata.\n" +
-        "Replay only: unknown records retained; no DPS, gameplay flags, names or ownership. JSON raw bytes use base64.\n" +
+        "Replay only: exact observed names, separate context labels; no DPS, gameplay flags or ownership. JSON raw bytes use base64.\n" +
         "Safety: --max-output-bytes N --max-depth N --max-total-bytes N --max-inner-frames N";
 
-    public static int Run(string[] args, TextWriter? output = null, TextWriter? error = null)
+    public static int Run(string[] args, TextWriter? output = null, TextWriter? error = null, string mode = "decode")
     {
         output ??= Console.Out; error ??= Console.Error;
         if (args.Length == 1 && args[0] is "--help" or "-h") { output.WriteLine(Usage); return 0; }
@@ -61,6 +61,26 @@ public static class ProtocolResearchCli
             var capture = new ResearchAnalyzer().Read(path, new(local.Address, (ushort)local.Port, remote!.Address, (ushort)remote.Port), metadata?.StartedUtc);
             var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
             var result = new ReplayProtocolDecoder(limits).Decode(path, streams, capture.OriginUtc);
+            if (mode is "identities" or "id-graph" or "skills")
+            {
+                var identities = new ReplayIdentityAnalyzer().Analyze(path, result);
+                var identityOptions = new JsonSerializerOptions { WriteIndented = true };
+                identityOptions.Converters.Add(new JsonStringEnumConverter());
+                object view = mode switch
+                {
+                    "id-graph" => new { identities.CaptureId, SessionLabel = metadata?.SessionLabel, identities.Summary,
+                        identities.Graph, identities.IdentityObservations, identities.RelationshipObservations, identities.TextContextObservations, identities.DecodeIssues },
+                    "skills" => new { identities.CaptureId, SessionLabel = metadata?.SessionLabel, identities.Summary,
+                        identities.Skills, identities.SupportedCombatRecords, identities.CombatCorrelations },
+                    _ => new { identities.CaptureId, SessionLabel = metadata?.SessionLabel, identities.Summary,
+                        identities.IdentityObservations, identities.RelationshipObservations, identities.TextContextObservations,
+                        identities.SupportedCombatRecords, identities.CombatCorrelations, identities.DecodeIssues }
+                };
+                if (summaryOnly) output.WriteLine(JsonSerializer.Serialize(new { identities.CaptureId, SessionLabel = metadata?.SessionLabel, identities.Summary }, identityOptions));
+                else if (json) output.WriteLine(JsonSerializer.Serialize(view, identityOptions));
+                else WriteIdentityText(output, mode, identities);
+                return 0;
+            }
             var supported = result.CombatCandidates.Where(c => c.Status == "Supported").ToArray();
             var summary = new
             {
@@ -105,4 +125,38 @@ public static class ProtocolResearchCli
 
     private static IPEndPoint Endpoint(string value) => IPEndPoint.TryParse(value, out var endpoint) && endpoint.Port is > 0 and <= 65535
         ? endpoint : throw new ArgumentException("Invalid IP:port endpoint.");
+
+    private static void WriteIdentityText(TextWriter output, string mode, IdentityResearchResult result)
+    {
+        output.WriteLine($"Capture scope: {result.CaptureId}. Replay research only; names may be unknown or conflicting.");
+        output.WriteLine(JsonSerializer.Serialize(result.Summary, new JsonSerializerOptions { WriteIndented = true }));
+        if (mode == "skills")
+        {
+            foreach (var skill in result.Skills)
+            {
+                output.WriteLine($"RawSkillCode={skill.RawSkillCode} count={skill.OccurrenceCount} sources=[{string.Join(',', skill.SourceEntityIds)}] targets=[{string.Join(',', skill.TargetEntityIds)}] aggregate={skill.AggregateMinimum}..{skill.AggregateMaximum} componentTailRows={skill.ComponentTailRows}");
+                output.WriteLine($"  rawFlagCombinations={JsonSerializer.Serialize(skill.RawFlagCombinations)} sourceRetrospectiveNames={JsonSerializer.Serialize(skill.SourceNames)} targetRetrospectiveNames={JsonSerializer.Serialize(skill.TargetNames)}");
+            }
+        }
+        else
+        {
+            foreach (var o in result.IdentityObservations)
+                output.WriteLine($"record={o.ObservationId} entity={o.EntityId} name={Quoted(o.Name)} evidence={o.EvidenceType} UTC={o.Timestamp:O}");
+            foreach (var o in result.RelationshipObservations)
+                output.WriteLine($"{o.ObservationId} header={o.HeaderEntityId} relatedCandidate={o.RelatedEntityIdCandidate} self={o.IsSelfId} kind={o.EvidenceType} context={Quoted(o.ContextLabel)}");
+            foreach (var o in result.TextContextObservations)
+                output.WriteLine($"context-record={o.ObservationId} entity={o.EntityId} ContextLabel={Quoted(o.ContextLabel)} (not a name)");
+            if (mode == "id-graph")
+            {
+                output.WriteLine($"nodes=[{string.Join(',', result.Graph.EntityNodes)}]");
+                foreach (var d in result.Graph.Duplicates) output.WriteLine($"duplicate entity={d.EntityId} name={Quoted(d.Name)} records=[{string.Join(',', d.ObservationIds)}]");
+                foreach (var c in result.Graph.Conflicts) output.WriteLine($"conflict entity={c.EntityId} names={JsonSerializer.Serialize(c.Resolution.Names)}");
+            }
+        }
+        foreach (var c in result.CombatCorrelations)
+            output.WriteLine($"combat={c.CombatRecordId} code={c.RawSkillCode} source={c.SourceEntityId} preceding={Resolution(c.SourcePrecedingName)} retrospective={Resolution(c.SourceRetrospectiveName)} target={c.TargetEntityId} preceding={Resolution(c.TargetPrecedingName)} retrospective={Resolution(c.TargetRetrospectiveName)}");
+        output.WriteLine("Use --json for full raw bytes, field values, observation links and provenance.");
+        static string Quoted(string? value) => value is null ? "unknown" : JsonSerializer.Serialize(value);
+        static string Resolution(NameResolution r) => $"{r.State}:{JsonSerializer.Serialize(r.Names)}";
+    }
 }
