@@ -8,7 +8,7 @@ namespace Aion2Meter.Replay.Research;
 
 public static class ProtocolResearchCli
 {
-    private const string Usage = "research decode|containers|identities|id-graph|skills <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
+    private const string Usage = "research decode|containers|identities|id-graph|skills|damage-events <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
         "With no endpoints, requires exactly one TCP port-13328 connection in companion session metadata.\n" +
         "Replay only: exact observed names, separate context labels; no DPS, gameplay flags or ownership. JSON raw bytes use base64.\n" +
         "Safety: --max-output-bytes N --max-depth N --max-total-bytes N --max-inner-frames N";
@@ -61,6 +61,39 @@ public static class ProtocolResearchCli
             var capture = new ResearchAnalyzer().Read(path, new(local.Address, (ushort)local.Port, remote!.Address, (ushort)remote.Port), metadata?.StartedUtc);
             var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
             var result = new ReplayProtocolDecoder(limits).Decode(path, streams, capture.OriginUtc);
+            if (mode == "damage-events")
+            {
+                var accepted = result.CombatCandidates.Where(c => c.Status == "Supported")
+                    .Select(SupportedCombatRecord.From).OrderBy(c => c.RawRecord, ResearchRecordArrivalComparer.Instance).ToArray();
+                var events = new DamageEventProjector().ProjectMany(accepted);
+                var audit = DamageEventAccountingAudit.Analyze(events);
+                var unsupported = result.CombatCandidates.Where(c => c.Status != "Supported").ToArray();
+                var eventSummary = new { AcceptedSupportedRecordCount = accepted.Length,
+                    ProjectedDamageEventCount = events.Count, UnsupportedCandidateCount = unsupported.Length,
+                    audit.ValidatedUniqueEventCount, audit.ValidatedTotalAmount, audit.DuplicateInputCount,
+                    audit.RejectedProvenanceCount };
+                var eventOptions = new JsonSerializerOptions { WriteIndented = true };
+                eventOptions.Converters.Add(new JsonStringEnumConverter());
+                if (json || summaryOnly)
+                    output.WriteLine(JsonSerializer.Serialize(new { CaptureScope = path, SessionLabel = metadata?.SessionLabel,
+                        Coverage = "Accepted supported category-6 (06/26) records only; not complete combat coverage. Timestamp is capture arrival.",
+                        Summary = eventSummary, AccountingAudit = audit,
+                        DecoderDiagnostics = new { SuppressedRecords = result.Records.Count(r => r.DecodeStatus == "Suppressed"),
+                            GapCount = streams.Sum(s => s.Gaps.Count), ConflictCount = streams.Sum(s => s.Conflicts.Count),
+                            capture.HeaderErrors, capture.UnsupportedPackets, Containers = result.Containers },
+                        DamageEvents = summaryOnly ? Array.Empty<DamageEvent>() : events,
+                        UnsupportedCandidates = summaryOnly ? Array.Empty<RawCombatCandidate>() : unsupported }, eventOptions));
+                else
+                {
+                    output.WriteLine($"CaptureScope={path}; accepted={accepted.Length}; projected={events.Count}; unsupported={unsupported.Length}");
+                    output.WriteLine($"Unique accepted={audit.ValidatedUniqueEventCount}; total aggregate={audit.ValidatedTotalAmount.ToString(CultureInfo.InvariantCulture)}; duplicate inputs={audit.DuplicateInputCount}; conflicting provenance={audit.RejectedProvenanceCount}");
+                    output.WriteLine("Timestamp is capture arrival. Components already included; no self total, DPS or complete combat coverage claimed.");
+                    foreach (var e in events)
+                        output.WriteLine($"{e.Identity} UTC={e.Timestamp:O} source={e.SourceEntityId} target={e.TargetEntityId} rawCode={e.RawSkillCode} amount={e.Amount}");
+                    output.WriteLine("Use --json for exact provenance, duplicate diagnostics, opaque raw-code totals and unsupported candidates.");
+                }
+                return 0;
+            }
             if (mode is "identities" or "id-graph" or "skills")
             {
                 var identities = new ReplayIdentityAnalyzer().Analyze(path, result);
