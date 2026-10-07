@@ -8,7 +8,7 @@ namespace Aion2Meter.Replay.Research;
 
 public static class ProtocolResearchCli
 {
-    private const string Usage = "research decode|containers|identities|id-graph|skills|damage-events <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
+    private const string Usage = "research decode|containers|identities|id-graph|skills|damage-events|self-binding <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
         "With no endpoints, requires exactly one TCP port-13328 connection in companion session metadata.\n" +
         "Replay only: exact observed names, separate context labels; no DPS, gameplay flags or ownership. JSON raw bytes use base64.\n" +
         "Safety: --max-output-bytes N --max-depth N --max-total-bytes N --max-inner-frames N";
@@ -21,6 +21,7 @@ public static class ProtocolResearchCli
         {
             if (args.Length == 0 || args[0].StartsWith('-')) throw new ArgumentException("Specify one capture path.");
             var path = Path.GetFullPath(args[0]);
+            if (mode == "self-binding" && !File.Exists(path)) throw new FileNotFoundException("Capture file not found.", path);
             var json = false; var summaryOnly = false;
             IPEndPoint? local = null, remote = null;
             var limits = new ProtocolDecodeLimits();
@@ -52,13 +53,29 @@ public static class ProtocolResearchCli
             if (local is null)
             {
                 var connections = metadata?.ConnectionsAtStart.Where(c => c.Protocol == TransportProtocol.Tcp && c.RemotePort == 13328).ToArray() ?? [];
-                if (connections.Length != 1) throw new ArgumentException("Metadata does not identify exactly one game connection; specify endpoints explicitly.");
+                if (connections.Length != 1)
+                {
+                    if (mode == "self-binding")
+                    {
+                        WriteBinding(output, new(CurrentPlayerBindingStatus.Unknown, null, null, null, null, null, null, null, [],
+                            ["No unique selected game connection in metadata; supply --local and --remote. No All Traffic text scanning performed."]), json || summaryOnly);
+                        return 0;
+                    }
+                    throw new ArgumentException("Metadata does not identify exactly one game connection; specify endpoints explicitly.");
+                }
                 if (connections[0].LocalPort == 0 || connections[0].RemoteIp is null || connections[0].RemotePort is null or 0)
                     throw new ArgumentException("Metadata game connection has no concrete endpoint pair.");
                 local = new(IPAddress.Parse(connections[0].LocalIp), connections[0].LocalPort);
                 remote = new(IPAddress.Parse(connections[0].RemoteIp!), connections[0].RemotePort!.Value);
             }
             var capture = new ResearchAnalyzer().Read(path, new(local.Address, (ushort)local.Port, remote!.Address, (ushort)remote.Port), metadata?.StartedUtc);
+            if (mode == "self-binding")
+            {
+                var binding = new ReplayCurrentPlayerBindingResolver().Analyze(capture,
+                    new(local.Address, (ushort)local.Port, remote.Address, (ushort)remote.Port), metadata?.SessionId.ToString(), limits);
+                WriteBinding(output, binding, json || summaryOnly);
+                return 0;
+            }
             var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
             var result = new ReplayProtocolDecoder(limits).Decode(path, streams, capture.OriginUtc);
             if (mode == "damage-events")
@@ -158,6 +175,20 @@ public static class ProtocolResearchCli
 
     private static IPEndPoint Endpoint(string value) => IPEndPoint.TryParse(value, out var endpoint) && endpoint.Port is > 0 and <= 65535
         ? endpoint : throw new ArgumentException("Invalid IP:port endpoint.");
+
+    private static void WriteBinding(TextWriter output, CurrentPlayerBinding binding, bool json)
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        options.Converters.Add(new JsonStringEnumConverter());
+        if (json) { output.WriteLine(JsonSerializer.Serialize(binding, options)); return; }
+        output.WriteLine($"Status={binding.Status}; EntityId={binding.EntityId?.ToString(CultureInfo.InvariantCulture) ?? "Unknown"}; CharacterName={JsonSerializer.Serialize(binding.CharacterName)}");
+        output.WriteLine($"Scope={JsonSerializer.Serialize(binding.Scope)}");
+        output.WriteLine($"CandidateObservedFrom={binding.CandidateObservedFrom:O}; ValidFrom={binding.ValidFrom:O}; ValidUntil={binding.ValidUntil:O}; EvidenceCoverageEnd={binding.EvidenceCoverageEnd:O}");
+        foreach (var e in binding.Evidence)
+            output.WriteLine($"tag={e.RecordTag} record={e.RecordId} candidate={e.EntityId} name={JsonSerializer.Serialize(e.CharacterName)} arrival={e.Timestamp:O} complete={e.CompletionTimestamp:O} numeric=[{e.NumericRange.Offset},{e.NumericRange.Offset + e.NumericRange.Length}) name=[{e.NameRange.Offset},{e.NameRange.Offset + e.NameRange.Length}) provenance={e.ProvenanceIdentity}");
+        foreach (var diagnostic in binding.Diagnostics) output.WriteLine(diagnostic);
+        output.WriteLine("Replay-only evidence. Capture coverage is not actor lifetime; Class/Ownership and live state remain unmodeled.");
+    }
 
     private static void WriteIdentityText(TextWriter output, string mode, IdentityResearchResult result)
     {
