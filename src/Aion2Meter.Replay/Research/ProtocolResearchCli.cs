@@ -8,7 +8,7 @@ namespace Aion2Meter.Replay.Research;
 
 public static class ProtocolResearchCli
 {
-    private const string Usage = "research decode|containers|identities|id-graph|skills|damage-events|self-binding <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
+    private const string Usage = "research decode|containers|identities|id-graph|skills|damage-events|self-binding|self-association <capture.pcap> [--local IP:port --remote IP:port] [--json] [--summary]\n" +
         "With no endpoints, requires exactly one TCP port-13328 connection in companion session metadata.\n" +
         "Replay only: exact observed names, separate context labels; no DPS, gameplay flags or ownership. JSON raw bytes use base64.\n" +
         "Safety: --max-output-bytes N --max-depth N --max-total-bytes N --max-inner-frames N";
@@ -21,7 +21,7 @@ public static class ProtocolResearchCli
         {
             if (args.Length == 0 || args[0].StartsWith('-')) throw new ArgumentException("Specify one capture path.");
             var path = Path.GetFullPath(args[0]);
-            if (mode == "self-binding" && !File.Exists(path)) throw new FileNotFoundException("Capture file not found.", path);
+            if (mode is "self-binding" or "self-association" && !File.Exists(path)) throw new FileNotFoundException("Capture file not found.", path);
             var json = false; var summaryOnly = false;
             IPEndPoint? local = null, remote = null;
             var limits = new ProtocolDecodeLimits();
@@ -55,10 +55,12 @@ public static class ProtocolResearchCli
                 var connections = metadata?.ConnectionsAtStart.Where(c => c.Protocol == TransportProtocol.Tcp && c.RemotePort == 13328).ToArray() ?? [];
                 if (connections.Length != 1)
                 {
-                    if (mode == "self-binding")
+                    if (mode is "self-binding" or "self-association")
                     {
-                        WriteBinding(output, new(CurrentPlayerBindingStatus.Unknown, null, null, null, null, null, null, null, [],
-                            ["No unique selected game connection in metadata; supply --local and --remote. No All Traffic text scanning performed."]), json || summaryOnly);
+                        var unknown = new CurrentPlayerBinding(CurrentPlayerBindingStatus.Unknown, null, null, null, null, null, null, null, [],
+                            ["No unique selected game connection in metadata; supply --local and --remote. No All Traffic text scanning performed."]);
+                        if (mode == "self-binding") WriteBinding(output, unknown, json || summaryOnly);
+                        else WriteAssociation(output, path, unknown, new ReplayDamageEventBindingAssociator().Analyze([], unknown, null), unknown.Diagnostics, json || summaryOnly);
                         return 0;
                     }
                     throw new ArgumentException("Metadata does not identify exactly one game connection; specify endpoints explicitly.");
@@ -74,6 +76,14 @@ public static class ProtocolResearchCli
                 var binding = new ReplayCurrentPlayerBindingResolver().Analyze(capture,
                     new(local.Address, (ushort)local.Port, remote.Address, (ushort)remote.Port), metadata?.SessionId.ToString(), limits);
                 WriteBinding(output, binding, json || summaryOnly);
+                return 0;
+            }
+            if (mode == "self-association")
+            {
+                var epoch = ReplayDamageEventEpochAdapter.Create(capture,
+                    new(local.Address, (ushort)local.Port, remote.Address, (ushort)remote.Port), metadata?.SessionId.ToString(), limits);
+                var audit = new ReplayDamageEventBindingAssociator().Analyze(epoch.Events, epoch.Binding, epoch);
+                WriteAssociation(output, path, epoch.Binding, audit, epoch.Diagnostics, json || summaryOnly);
                 return 0;
             }
             var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
@@ -188,6 +198,28 @@ public static class ProtocolResearchCli
             output.WriteLine($"tag={e.RecordTag} record={e.RecordId} candidate={e.EntityId} name={JsonSerializer.Serialize(e.CharacterName)} arrival={e.Timestamp:O} complete={e.CompletionTimestamp:O} numeric=[{e.NumericRange.Offset},{e.NumericRange.Offset + e.NumericRange.Length}) name=[{e.NameRange.Offset},{e.NameRange.Offset + e.NameRange.Length}) provenance={e.ProvenanceIdentity}");
         foreach (var diagnostic in binding.Diagnostics) output.WriteLine(diagnostic);
         output.WriteLine("Replay-only evidence. Capture coverage is not actor lifetime; Class/Ownership and live state remain unmodeled.");
+    }
+
+    private static void WriteAssociation(TextWriter output, string path, CurrentPlayerBinding binding,
+        DamageEventPlayerAssociationAudit audit, IReadOnlyList<string> diagnostics, bool json)
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        options.Converters.Add(new JsonStringEnumConverter());
+        if (json)
+        {
+            output.WriteLine(JsonSerializer.Serialize(new { CaptureScope = path, Binding = binding,
+                Coverage = "Finite supported replay records; event timestamp is arrival. Direct source association only; ownership unknown.",
+                Summary = new { audit.InputEventCount, audit.SelfCount, audit.OtherCount, audit.UnknownCount },
+                audit.Associations, DecoderDiagnostics = diagnostics }, options));
+            return;
+        }
+        output.WriteLine($"Binding={binding.Status}; EntityId={binding.EntityId}; Scope={JsonSerializer.Serialize(binding.Scope)}");
+        output.WriteLine($"ValidFrom={binding.ValidFrom:O}; ValidUntil={binding.ValidUntil:O}; EvidenceCoverageEnd={binding.EvidenceCoverageEnd:O}");
+        output.WriteLine($"InputEventCount={audit.InputEventCount}; SelfCount={audit.SelfCount}; OtherCount={audit.OtherCount}; UnknownCount={audit.UnknownCount}");
+        foreach (var a in audit.Associations)
+            output.WriteLine($"input={a.InputIndex} {a.EventIdentity} UTC={a.EventTimestamp:O} source={a.EventSourceEntityId} status={a.Status} diagnostic={a.Diagnostic}");
+        foreach (var d in binding.Diagnostics.Concat(diagnostics)) output.WriteLine(d);
+        output.WriteLine("Replay-only direct-source association; ownership and live lifecycle remain unknown. No amount accounting performed.");
     }
 
     private static void WriteIdentityText(TextWriter output, string mode, IdentityResearchResult result)
