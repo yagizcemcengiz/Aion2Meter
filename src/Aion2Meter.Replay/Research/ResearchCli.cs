@@ -9,6 +9,7 @@ public static class ResearchCli
 {
     private const string Usage = "research <capture.pcap> --local IP:port --remote IP:port [options]\n" +
         "research compare <a.pcap> <b.pcap> [...] --local IP:port --remote IP:port --sequence CSV [options]\n" +
+        "research blocks --help (candidate framing, families, numeric hypotheses)\n" +
         "Options: --timeline --payload --max-payload-bytes 64 --max-packets 200\n" +
         "  --from seconds --to seconds --direction out|in|both\n" +
         "  --frame-length N --frame-lengths CSV --payload-length N\n" +
@@ -17,6 +18,7 @@ public static class ResearchCli
 
     public static int Run(string[] args, TextWriter? output = null, TextWriter? error = null)
     {
+        if (args.Length > 0 && args[0] == "blocks") return BlockResearchCli.Run(args[1..], output, error);
         output ??= Console.Out;
         error ??= Console.Error;
         if (args.Length == 1 && args[0] is "--help" or "-h") { output.WriteLine(Usage); return 0; }

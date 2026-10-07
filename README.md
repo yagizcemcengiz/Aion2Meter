@@ -286,13 +286,48 @@ Her dosyada en çok 250000 seçilen packet / 64 MiB payload, compare toplamında
 
 ### Privacy ve araştırma sınırları
 
-Research çıktısı **yalnız console'a** yazılır, dosya oluşturmaz. Credentials/auth lexical işaretleri ve JWT benzeri diziler için tüm packet payload'ları ve bitişik stream (display window dışı dahil) kontrol edilir. Saptanan yönde payload preview, stream hex/pattern ve ilgili byte comparison bastırılır; credential/token çıkarılmaz. Stream güvenilir şekilde kontrol edilemiyorsa byte çıktısı konservatif olarak bastırılır. Bu bir heuristic'tir; bilinmeyen binary formatlarda gizli verinin yokluğunu garanti etmez.
+Research çıktısı **yalnız console'a** yazılır, dosya oluşturmaz. Credentials/auth lexical işaretleri ve JWT benzeri diziler için tüm packet payload'ları ve bitişik stream (display window dışı dahil) kontrol edilir. Saptanan yönde payload preview, stream hex/pattern ve ilgili byte comparison bastırılır; credential/token çıkarılmaz. Stream güvenilir şekilde kontrol edilemiyorsa byte çıktısı konservatif olarak bastırılır. Bu bir heuristic'tir; bilinmeyen binary formatlarda gizli verinin yokluğunu garanti etmez. Phase 3B block komutu da filtrelerden önce tüm seçilen yönü kontrol eder; sensitive yönde extraction/comparison/numeric output üretmez.
 
-`captures/`, PCAP/PCAPNG ve session metadata ignore edilmeye devam eder. CLI çıktısını elle yönlendirirseniz yalnız `captures/` altında tutun; **payload dump'larını Git'e eklemeyin**. Repo'ya gerçek capture, capture-derived fixtures veya ham research output eklenmez. Synthetic test fixtures çalışma sırasında geçici ignored build dizininde oluşur ve temizlenir.
+`captures/`, PCAP/PCAPNG ve session metadata ignore edilmeye devam eder. CLI çıktısını elle yönlendirirseniz `captures/` veya ignored `.tools/tmp/` altında tutun; **payload dump'larını Git'e eklemeyin**. Repo'ya gerçek capture, capture-derived fixtures veya ham research output eklenmez. Synthetic test fixtures çalışma sırasında geçici ignored build dizininde oluşur ve temizlenir.
 
-Kavramlar ayrı tutulur: **Network Packet → TCP Byte Stream → Application Message → Combat Event → Skill Cast**. Henüz application framing bilinmiyor; bu oklar 1:1 eşleme anlamına gelmez. Bir cast tek packet, bir packet tek combat event veya Earth's Retribution iki hit varsayımı yoktur. Üç controlled session'da kullanıcı skill'i bir kez kullandığını bildirmiştir; diğer gözlenen combat sayıları passive/proc/periodic/equipment vb. etkiler olabilir. Ekran gözlemleri decoded network fact değildir. Yaklaşık capture+10s manuel cast bilgisi frame-accurate timestamp değildir. Görülen damage sayıları payload içinde aranmaz; endian brute force/field ataması yapılmaz.
+Kavramlar ayrı tutulur: **Network Packet → TCP Byte Stream → Application Message → Combat Event → Skill Cast**. Application framing henüz doğrulanmamıştır; bu oklar 1:1 eşleme anlamına gelmez. Bir cast tek packet, bir packet tek combat event veya Earth's Retribution iki hit varsayımı yoktur. Üç controlled session'da kullanıcı skill'i bir kez kullandığını bildirmiştir; diğer gözlenen combat sayıları passive/proc/periodic/equipment vb. etkiler olabilir. Ekran gözlemleri decoded network fact değildir. Yaklaşık capture+10s manuel cast bilgisi frame-accurate timestamp değildir. Phase 3A sayısal ground truth araması yapmaz. Phase 3B'de yalnız açık `--hypothesis-value` ile doğrudan unsigned integer representations aranabilir; transform/endian brute force veya field ataması yapılmaz.
 
 Phase 3A yalnız offline evidence toplar. Network replay/injection/modification, game input automation, memory/DLL/process/API/DirectX hooks, anti-cheat etkileşimi, TLS interception, decryption/key discovery ve production combat parser/DPS engine içermez.
+
+## Phase 3B — candidate block research
+
+`research blocks` 1–16 classic PCAP'te seçilen TCP bağlantısını offline inceler. Default yön `in`; `--direction out|in|both` ile değişir. Production combat parser, DPS engine veya overlay içermez. Binary eşleşmeler gameplay field mapping değildir.
+
+```powershell
+$endpoints = @("--local", "192.0.2.1:12345", "--remote", "198.51.100.2:443")
+
+dotnet run --project src/Aion2Meter.Replay -- research blocks "captures/session-a.pcap" @endpoints `
+  --from 11 --to 17 --byte-offsets
+
+# Generic body-prefix filtresi prefix'in sonrasından başlar; hiçbir signature skill'e atanmaz.
+dotnet run --project src/Aion2Meter.Replay -- research blocks `
+  "captures/session-a.pcap" "captures/session-b.pcap" @endpoints `
+  --block-length 35 --body-prefix AABB --hypothesis-value 337 --hypothesis-value 6
+
+dotnet run --project src/Aion2Meter.Replay -- research blocks "captures/session-a.pcap" @endpoints `
+  --sequence 57,61,92 --action-window-seconds 3 --summary --json
+
+dotnet run --project src/Aion2Meter.Replay -- research blocks --help
+```
+
+Framing **UNVALIDATED hypothesis** olarak her çıktıda belirtilir: canonical unsigned base-128 little-seven-bit prefix değeri `V`, prefix byte sayısı `N` ise toplam candidate block uzunluğu `V + N - 4`. Bu formül yalnız araştırma içindir. Stream'in ilk gözlenen byte'ı ve her contiguous run başlangıcı varsayılan candidate boundary'dir; midstream başlangıç doğrulanmaz. Prefix transport chunk sınırını geçebilir, bir block birden çok chunk'tan gelebilir ve tek packet birden çok block taşıyabilir. TCP gap geçilmez. Malformed/noncanonical/overflow prefix, eksik body, aşırı uzunluk veya conflicting overlap bulunduğunda o run durur; byte atlayarak resynchronization aranmaz. Sonraki ayrı run kendi açık sınır varsayımıyla değerlendirilir. Covered/available bytes, contiguous runs, unparsed offset/bytes/reason, gaps/conflicts ve duplicate/overlap sayaçları gösterilir. Tam coverage tek başına framing'in doğru olduğunu kanıtlamaz.
+
+Full connection stream önce reassemble/extract edilir; `--from`/`--to`, `--block-length` ve `--body-prefix` **sonra** adaylara uygulanır. Böylece time filtresi yeni bir application boundary icat etmez; stream offset daima full capture'daki en düşük gözlenen payload sequence'e göredir. Block timestamp ilk byte'ı taşıyan chunk'ın capture zamanıdır; oyun/input/event zamanı değildir. `CompletionUtc` en geç contributing chunk zamanını ayrıca gösterir. Timestamp sırası sequence sırasından farklı olabilir. Birden çok SYN origin'i içeren dosya block komutunda reddedilir; bu komut connection epoch seçmek için time filtresiyle stream'i kesmez.
+
+Her block yön başına 1-based extraction index, UTC/relative seconds, original source/completion packet index, stream offset, length, full hex ve parsed prefix value/byte count taşır. `--byte-offsets` 0-based **block-relative** offset tablosunu açar (en çok 4096 satır/block; omitted count belirtilir). Index filtreleme sonrası yeniden numaralanmaz. `--max-blocks` default 200, üst sınır 10000; family count/signature/comparison ve numeric totals bütün seçilen block'ları içerir. `--summary` block detail satırlarını kaldırır. `--json` aynı evidence'ı machine-readable console JSON olarak verir. Suppressed ve omitted alanları yok/eksik evidence ile gerçek sıfır sonucunu ayırır.
+
+Gruplama key'i yön + toplam uzunluk + prefix'ten sonraki ilk iki raw byte'tır. Bu **heuristic structural grouping**dir; aynı key ilişkili gameplay event demek değildir. Başka sabit body prefix'leri `--body-prefix` ile daraltılabilir. Her family için observed fixed/variable offset aralıkları, common prefix/suffix, değişken byte'lar için `??` signature, tüm offset'lerin same/different tablosu ve ayrı offset 32 satırları üretilir. Karşılaştırma ilk 16 sample sütununu, en çok 4096 offset satırını gösterir; aggregate signature/ranges tüm sample ve byte'ları kapsar. Offset 32 satırları `--max-blocks` ile sınırlanır, eksiltilenler ayrıca sayılır. Singleton'daki sabitlik çapraz sample validation değildir; yeni sample gelince signature değişebilir. Aynı sample kümesinde input sırası signature'ı değiştirmez.
+
+`--hypothesis-value` decimal `uint32` aralığındadır ve 32 kez verilebilir. Değer sığıyorsa uint8, uint16 LE/BE, her zaman uint32 LE/BE representation aranır; block sınırı geçilmez. Her doğrudan eşleşme yalnız **candidate numeric match** olarak value/representation/offset/hex ile gösterilir. Eşleşmeyen değer **not directly represented in selected candidate blocks** olarak raporlanır; yokluk transform/encryption iddiası değildir. Başka block'larda veya rastgele offset'lerde sayısal tesadüf bulunması ground truth validation değildir. Unreadable visual değerler hypothesis girdisi yapılmamalıdır.
+
+Caller-supplied `--sequence` outbound frame dizisi capture genelinde aranır; action-group listesi yalnız seçilen time penceresindeki outbound matches'i kullanır. `--sequence-window-ms` default 20 ms; `--action-window-seconds` default 3 s. Her match sonrası seçilmiş inbound adayların delta'ları ve same-family repetition count'u gösterilir. Default tüm inbound trafik adayları kapsanır; araştırılan body prefix'i seçmek daha dar bir association verir. Cue ve manuel input timestamp'i aynı kabul edilmez; bir block bir damage event, bir cast iki block/hit varsayımı yapılmaz. FRONT/CRITICAL için yalnız differing offsets incelenir, flag anlamı atanmaz.
+
+Phase 3A okuma limitlerine ek olarak extraction yön başına 64 MiB, candidate length 1 MiB, toplam 250000 block ile sınırlıdır. Comparison output 4096 family / 100000 row sınırındadır; aşımda filtre daraltılması istenir, sessiz truncation yapılmaz. JSON offset range alanlarında `End` exclusive'dir; text `ByteRange` gösterimi inclusive son offset kullanır. Framing/gap/conflict veya suppression nedeniyle evidence eksikse numeric yokluk kesin sonuç olarak yazılmaz. Deterministic testler yalnız synthetic bytes/PCAP kullanır: chunk-spanning/coalesced extraction, prefix width, malformed/gap/conflict handling, grouping, signature stability, tüm differing offsets, direct integer representations, CLI filtering/output limits, action repetition ve full-direction privacy kontrolü.
 
 ## Controlled test için görsel cue
 
