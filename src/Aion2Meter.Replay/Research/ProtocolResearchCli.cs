@@ -86,8 +86,9 @@ public static class ProtocolResearchCli
                 WriteAssociation(output, path, epoch.Binding, audit, epoch.Diagnostics, json || summaryOnly);
                 return 0;
             }
-            var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
-            var result = new ReplayProtocolDecoder(limits).Decode(path, streams, capture.OriginUtc);
+            var shared = SharedProtocolPipeline.Decode(capture, limits);
+            var streams = shared.Streams;
+            var result = shared.Decoded;
             if (mode == "damage-events")
             {
                 var accepted = result.CombatCandidates.Where(c => c.Status == "Supported")

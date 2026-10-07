@@ -34,20 +34,24 @@ public sealed class ReplayDamageEventEpochAdapter
         ArgumentNullException.ThrowIfNull(capture); ArgumentNullException.ThrowIfNull(connection);
         try
         {
-            var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
-            var decoded = new ReplayProtocolDecoder(limits).Decode(capture.Path, streams, capture.OriginUtc);
-            var binding = new ReplayCurrentPlayerBindingResolver().Resolve(capture, connection, decoded.Records, sessionId);
-            var accepted = decoded.CombatCandidates.Where(c => c.Status == "Supported").Select(SupportedCombatRecord.From)
-                .OrderBy(c => c.RawRecord, ResearchRecordArrivalComparer.Instance);
-            return new(binding, new DamageEventProjector().ProjectMany(accepted),
-                [$"Selected finite decode: gaps={streams.Sum(s => s.Gaps.Count)}; conflicts={streams.Sum(s => s.Conflicts.Count)}; unsupported combat candidates={decoded.CombatCandidates.Count(c => c.Status != "Supported")}."],
-                ClosurePacket(capture, binding));
+            return FromDecoded(capture, connection, SharedProtocolPipeline.Decode(capture, limits), sessionId);
         }
         catch (InvalidDataException ex)
         {
             var binding = new ReplayCurrentPlayerBindingResolver().Analyze(capture, connection, sessionId, limits);
             return new(binding, [], ["No supported event projection from unmodeled replay: " + ex.Message]);
         }
+    }
+
+    internal static ReplayDamageEventEpochAdapter FromDecoded(ResearchCapture capture,
+        TcpConnectionSelection connection, SharedProtocolResult result, string? sessionId = null)
+    {
+        var binding = new ReplayCurrentPlayerBindingResolver().Resolve(capture, connection, result.Decoded.Records, sessionId);
+        var accepted = result.Decoded.CombatCandidates.Where(c => c.Status == "Supported").Select(SupportedCombatRecord.From)
+            .OrderBy(c => c.RawRecord, ResearchRecordArrivalComparer.Instance);
+        return new(binding, new DamageEventProjector().ProjectMany(accepted),
+            [$"Selected finite decode: gaps={result.Streams.Sum(s => s.Gaps.Count)}; conflicts={result.Streams.Sum(s => s.Conflicts.Count)}; unsupported combat candidates={result.Decoded.CombatCandidates.Count(c => c.Status != "Supported")}."],
+            ClosurePacket(capture, binding));
     }
 
     internal bool Contains(DamageEvent e) => Binding.Status == CurrentPlayerBindingStatus.Resolved && eventOccurrences.Contains(e);

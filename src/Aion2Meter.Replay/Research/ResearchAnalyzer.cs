@@ -34,9 +34,10 @@ public sealed class ResearchAnalyzer(IOfflinePacketSource source, TcpResearchPac
         long index = 0, bytes = 0;
         var errors = 0;
         var unsupported = 0;
-        foreach (var capture in source.Read(path, cancellationToken))
+        foreach (var input in new ReplayPacketSource(path, source).Read(cancellationToken))
         {
-            index++;
+            var capture = input.Packet;
+            index = input.PacketIndex;
             if (first is null || capture.TimestampUtc < first) first = capture.TimestampUtc;
             TcpSegment? segment;
             try { segment = reader.Read(capture, index); }

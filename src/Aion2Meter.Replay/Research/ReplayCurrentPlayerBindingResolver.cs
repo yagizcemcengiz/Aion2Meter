@@ -10,8 +10,7 @@ public sealed class ReplayCurrentPlayerBindingResolver
     {
         try
         {
-            var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
-            var decoded = new ReplayProtocolDecoder(limits).Decode(capture.Path, streams, capture.OriginUtc);
+            var decoded = SharedProtocolPipeline.Decode(capture, limits).Decoded;
             return Resolve(capture, connection, decoded.Records, sessionId);
         }
         catch (InvalidDataException ex) { return Unknown(capture, connection, sessionId, "Incomplete/unsupported replay: " + ex.Message); }
