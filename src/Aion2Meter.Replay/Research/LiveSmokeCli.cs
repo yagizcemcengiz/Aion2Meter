@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Aion2Meter.Capture;
 
 namespace Aion2Meter.Replay.Research;
@@ -54,8 +53,7 @@ public static class LiveSmokeCli
             var adapter = adapters[index!.Value - 1];
             var pipeline = new LivePacketPipeline(adapter.IPv4Addresses.Concat(adapter.IPv6Addresses), port);
             var source = new NpcapLiveSource(adapter, port);
-            var options = new JsonSerializerOptions(); options.Converters.Add(new JsonStringEnumConverter());
-            output.WriteLine(json ? JsonSerializer.Serialize(new { Kind = "start", source.SourceId, Interface = adapter.Identifier, Port = port })
+            output.WriteLine(json ? LiveDiagnosticJson.SerializeStart(source.SourceId, adapter.Identifier, port)
                 : $"Interface={adapter.DisplayName}; source={source.SourceId}; TCP port={port}; passive capture; Ctrl+C stops.");
             using var cancellation = new CancellationTokenSource();
             void Cancel(object? sender, ConsoleCancelEventArgs e) { e.Cancel = true; cancellation.Cancel(); }
@@ -65,8 +63,7 @@ public static class LiveSmokeCli
                 LiveDiagnosticRunner.RunAsync(source, pipeline, epochs =>
                 {
                     if (json)
-                        output.WriteLine(JsonSerializer.Serialize(new { Kind = "snapshot", TimestampUtc = DateTimeOffset.UtcNow,
-                            pipeline.MalformedPackets, pipeline.UnsupportedPackets, pipeline.IgnoredPackets, pipeline.RejectedFlows, Epochs = epochs }, options));
+                        output.WriteLine(SnapshotJson(pipeline, epochs, DateTimeOffset.UtcNow));
                     else
                     {
                         output.WriteLine($"UTC={DateTimeOffset.UtcNow:O}; flows={epochs.Count}; malformed={pipeline.MalformedPackets}; unsupported-link/IP={pipeline.UnsupportedPackets}; ignored={pipeline.IgnoredPackets}; rejected-flows={pipeline.RejectedFlows}");
@@ -86,4 +83,7 @@ public static class LiveSmokeCli
         catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or SharpPcap.PcapException || AdapterDiscovery.IsNativeLoadFailure(ex))
         { error.WriteLine("Live capture error: " + ex.Message); return 1; }
     }
+
+    public static string SnapshotJson(LivePacketPipeline pipeline, IReadOnlyList<LiveEpochSnapshot> epochs, DateTimeOffset timestampUtc) =>
+        LiveDiagnosticJson.SerializeSnapshot(pipeline, epochs, timestampUtc);
 }
