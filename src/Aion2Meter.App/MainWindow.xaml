@@ -107,14 +107,26 @@
             <TextBlock Text="User Notes (saved only in local metadata):" />
             <TextBox x:Name="UserNotesBox" MaxLength="4000" Margin="0,4,0,4" />
         </StackPanel>
-        <Grid Grid.Row="8" MinHeight="180">
+        <Expander x:Name="DiagnosticLogExpander" Grid.Row="8" IsExpanded="False">
+          <Expander.Style>
+            <Style TargetType="Expander">
+              <Setter Property="Header" Value="Show Diagnostic Log" />
+              <Style.Triggers>
+                <Trigger Property="IsExpanded" Value="True">
+                  <Setter Property="Header" Value="Hide Diagnostic Log" />
+                </Trigger>
+              </Style.Triggers>
+            </Style>
+          </Expander.Style>
+          <Grid Height="210" Margin="0,8,0,0" RequestBringIntoView="DiagnosticLogRequestBringIntoView">
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
             <TextBlock Text="Diagnostic log • Last 100 messages" FontWeight="SemiBold" Margin="0,0,0,6" />
             <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding Logs}" FontFamily="Consolas" FontSize="12"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto">
                 <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12" /></DataTemplate></ListBox.ItemTemplate>
             </ListBox>
-        </Grid>
+          </Grid>
+        </Expander>
     </Grid>
     </ScrollViewer>
 </Window>

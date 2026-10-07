@@ -258,8 +258,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Logs.Add($"{(timestamp ?? DateTimeOffset.UtcNow).UtcDateTime:HH:mm:ss} UTC [{level}] {message}");
         while (Logs.Count > 100) Logs.RemoveAt(0);
-        if (Logs.Count > 0) LogList.ScrollIntoView(Logs[^1]);
     }
+
+    // The bounded log may scroll internally; its visibility requests must not scroll the page.
+    private void DiagnosticLogRequestBringIntoView(object sender, RequestBringIntoViewEventArgs e) => e.Handled = true;
 
     private void ShowError(Exception error)
     {
