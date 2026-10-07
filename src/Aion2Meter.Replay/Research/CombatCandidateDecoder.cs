@@ -25,7 +25,11 @@ public static class CombatCandidateDecoder
             regions["UnknownFourBytes"] = Take(4);
             regions["UnknownThreeBytes"] = Take(3);
             result = result with { ModifierCandidate = modifierRegion[0], DirectionCandidate = modifierRegion[2], UnknownRegions = regions, ZeroUnknownCandidate = Number() };
-            if (modifierRegion[1] != 0 || !regions["UnknownThreeBytes"].AsSpan().SequenceEqual(new byte[] { 1, 0, 0 }) || result.ZeroUnknownCandidate != 0)
+            var layoutMarker = regions["UnknownThreeBytes"][0];
+            // Matching markers are structural guards; their gameplay meaning remains unknown.
+            var supportedMarker = result.CategoryOrSwitch == 0x06 ? layoutMarker is 1 or 2 or 3 : layoutMarker is 1 or 2;
+            if (modifierRegion[1] != 0 || !supportedMarker || regions["UnknownThreeBytes"][1] != 0 ||
+                regions["UnknownThreeBytes"][2] != 0 || result.ZeroUnknownCandidate != 0)
                 return Fail("Unsupported", "Unresolved category-6 layout guards; no cursor realignment attempted.");
             result = result with { PreValueCandidate = Number(), AggregateAmount = Number() };
             var components = new List<ulong>();
@@ -44,7 +48,7 @@ public static class CombatCandidateDecoder
                 }
             }
             result = result with { TerminalBytes = Take(2) };
-            if (!result.TerminalBytes.AsSpan().SequenceEqual(new byte[] { 1, 0 }) || position != bytes.Length)
+            if (!result.TerminalBytes.AsSpan().SequenceEqual(new byte[] { layoutMarker, 0 }) || position != bytes.Length)
                 return Fail("Unsupported", "Unknown terminal/trailing bytes; raw record retained.");
             if (sum > result.AggregateAmount.Value) return Fail("Malformed", "Component sum exceeds aggregate; aggregate retained.");
             return result with { Status = "Supported", Confidence = "Validated category-6 numeric shape; identities, skills and flags remain candidates",
