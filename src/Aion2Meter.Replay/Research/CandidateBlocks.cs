@@ -49,13 +49,10 @@ public static class CandidateBlockExtractor
             while (position < size)
             {
                 var start = runStart + position;
-                if (!ReadPrefix(bytes.AsSpan(position), out var value, out var width, out var reason))
-                { issues.Add(new(start, size - position, reason)); break; }
-                var length = (long)value + width - 4;
-                if (length < width || length > MaximumBlockLength)
-                { issues.Add(new(start, size - position, "Invalid or over-limit candidate length.")); break; }
-                if (length > size - position)
-                { issues.Add(new(start, size - position, "Incomplete candidate at run end (gap or capture boundary).")); break; }
+                var frame = ApplicationFraming.Read(bytes.AsSpan(position));
+                if (!frame.Success)
+                { issues.Add(new(start, size - position, frame.Error!)); break; }
+                var length = frame.TotalLength;
                 while (conflictIndex < conflicts.Length && conflicts[conflictIndex].End <= start) conflictIndex++;
                 if (conflictIndex < conflicts.Length && conflicts[conflictIndex].Offset < start + length)
                 { issues.Add(new(start, size - position, "Conflicting TCP overlap; ambiguous bytes. Run stopped.")); break; }
@@ -68,7 +65,7 @@ public static class CandidateBlockExtractor
                     if (chunks[i].TimestampUtc > latest.TimestampUtc || chunks[i].TimestampUtc == latest.TimestampUtc && chunks[i].PacketIndex > latest.PacketIndex) latest = chunks[i];
                 blocks.Add(new(blocks.Count + 1, stream.Direction, chunks[source].TimestampUtc,
                     (chunks[source].TimestampUtc - origin).TotalSeconds, start, chunks[source].PacketIndex,
-                    latest.PacketIndex, latest.TimestampUtc, value, width, bytes.AsSpan(position, (int)length).ToArray()));
+                    latest.PacketIndex, latest.TimestampUtc, frame.PrefixValue, frame.PrefixLength, bytes.AsSpan(position, length).ToArray()));
                 position += (int)length;
                 covered += length;
             }
@@ -77,23 +74,6 @@ public static class CandidateBlockExtractor
         return new(blocks, issues, available, covered, runs);
     }
 
-    private static bool ReadPrefix(ReadOnlySpan<byte> bytes, out uint value, out int width, out string reason)
-    {
-        value = 0; width = 0; reason = "Incomplete prefix.";
-        for (var i = 0; i < Math.Min(5, bytes.Length); i++)
-        {
-            var b = bytes[i]; width++;
-            if (i == 4 && (b & 0xf0) != 0) { reason = "Overflowing or unterminated uint32 prefix."; return false; }
-            value |= (uint)(b & 0x7f) << (7 * i);
-            if ((b & 0x80) == 0)
-            {
-                if (i > 0 && b == 0) { reason = "Noncanonical prefix."; return false; }
-                return true;
-            }
-        }
-        if (bytes.Length >= 5) reason = "Unterminated prefix.";
-        return false;
-    }
 }
 
 public sealed record BlockSample(string Label, CandidateBlock Block);

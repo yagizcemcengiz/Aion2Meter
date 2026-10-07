@@ -29,6 +29,11 @@
         "resolved": "3.1.4",
         "contentHash": "5mj99LvCqrq3CNi06xYdyIAXOEh+5b33F2nErCzI5zWiDdLHXiPXEWFSUAF8zlIv0ZWqjZNCwHTQeAPYbF3pCg=="
       },
+      "K4os.Compression.LZ4": {
+        "type": "Transitive",
+        "resolved": "1.3.8",
+        "contentHash": "LhwlPa7c1zs1OV2XadMtAWdImjLIsqFJPoRcIWAadSRn0Ri1DepK65UbWLPmt4riLqx2d40xjXRk0ogpqNtK7g=="
+      },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
         "resolved": "17.14.1",
@@ -121,7 +126,8 @@
         "type": "Project",
         "dependencies": {
           "Aion2Meter.Capture": "[1.0.0, )",
-          "Aion2Meter.Core": "[1.0.0, )"
+          "Aion2Meter.Core": "[1.0.0, )",
+          "K4os.Compression.LZ4": "[1.3.8, )"
         }
       }
     }
