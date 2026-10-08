@@ -1,5 +1,6 @@
 using Aion2Meter.Core;
 using Aion2Meter.Replay.Research;
+using System.Security.Cryptography;
 
 namespace Aion2Meter.Replay;
 
@@ -15,6 +16,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     private sealed class State
     {
         public Dictionary<string, (string Fingerprint, DamageEventPlayerAssociationStatus Status)> Seen { get; } = [];
+        public Dictionary<string, string> SeenRecords { get; } = [];
         public bool Poisoned;
         public bool WasResolved;
         public bool Ended;
@@ -24,8 +26,10 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     public event Action<LiveEpochSnapshot>? EpochObserved;
     public event Action<LiveCombatEvent>? Published;
     public event Action<string>? EpochEnded;
+    internal event Action<string, RawProtocolRecord>? RecordPublished;
     public long PublishedCount { get; private set; }
     public int RetainedIdentities => states.Values.Sum(s => s.Seen.Count);
+    public int RetainedPartyRecordIdentities => states.Values.Sum(s => s.SeenRecords.Count);
 
     internal void CommitCheckpoint(string epochId, IReadOnlyDictionary<TrafficDirection, long> ends)
     {
@@ -39,9 +43,11 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         // Every observed event belongs to the complete committed prefix; transport watermarks replace
         // identities, rather than evicting them by age or arbitrary count.
         state.Seen.Clear(); state.Seen.TrimExcess();
+        state.SeenRecords.Clear(); state.SeenRecords.TrimExcess();
     }
 
-    internal bool Observe(LiveEpochSnapshot snapshot, ReplayDamageEventEpochAdapter? adapter)
+    internal bool Observe(LiveEpochSnapshot snapshot, ReplayDamageEventEpochAdapter? adapter,
+        IReadOnlyList<RawProtocolRecord>? records = null)
     {
         if (!states.TryGetValue(snapshot.EpochId, out var state))
         {
@@ -57,6 +63,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         var invalid = snapshot.Lifecycle == "Faulted" || state.WasResolved && snapshot.BindingStatus != CurrentPlayerBindingStatus.Resolved;
         state.Poisoned |= invalid;
         var pending = new List<(DamageEvent Event, DamageEventPlayerAssociation Association, string Location, string Fingerprint)>();
+        var pendingRecords = new List<(RawProtocolRecord Record, string Location, string Fingerprint)>();
         if (!state.Poisoned && adapter is not null)
         {
             var audit = new ReplayDamageEventBindingAssociator().Analyze(adapter.Events, adapter.Binding, adapter);
@@ -81,6 +88,24 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
                 RetainedIdentities + pending.Count > maximumEventsPerEpoch)
                 state.Poisoned = true;
         }
+        if (!state.Poisoned && records is not null)
+        {
+            var occurrences = new HashSet<string>();
+            foreach (var r in records.Where(r => r.Direction == TrafficDirection.ServerToClient &&
+                r.OpcodeCandidate is "4536" or "0892" or "0D92" or "0092" or "1392" or "2192" or "2F92"))
+            {
+                var location = Location(r);
+                var fingerprint = Convert.ToHexString(SHA256.HashData(r.RawBytes));
+                if (r.SourceCapture != snapshot.EpochId || r.OuterFrameOffset < state.Retired[(int)r.Direction] || !occurrences.Add(location))
+                { state.Poisoned = true; break; }
+                if (state.SeenRecords.TryGetValue(location, out var previous))
+                { if (previous != fingerprint) { state.Poisoned = true; break; } continue; }
+                pendingRecords.Add((r, location, fingerprint));
+            }
+            if (state.SeenRecords.Keys.Any(key => !occurrences.Contains(key)) ||
+                states.Values.Sum(s => s.SeenRecords.Count) + pendingRecords.Count > maximumEventsPerEpoch)
+                state.Poisoned = true;
+        }
         if (state.Poisoned)
             snapshot = snapshot with { Lifecycle = "Faulted", BindingStatus = CurrentPlayerBindingStatus.Unknown,
                 EntityId = null, CharacterName = null, IdentityValidFrom = null, RecoveryMethod = LiveIdentityRecoveryMethod.None,
@@ -88,16 +113,32 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         state.WasResolved |= snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved;
         EpochObserved?.Invoke(snapshot);
         if (!state.Poisoned)
-            foreach (var item in pending)
+        {
+            // Membership and combat must advance on one complete-record timeline. Applying the final
+            // roster before a batch of past hits would erase valid pre-leave/rejoin contributions.
+            var timeline = pending.Select((p, i) => (Record: OrderingRecord(p.Event), IsCombat: true, Index: i))
+                .Concat(pendingRecords.Select((p, i) => (p.Record, IsCombat: false, Index: i)))
+                .OrderBy(p => p.Record.CompletionUtc).ThenBy(p => p.Record.CompletionPacketIndex)
+                .ThenBy(p => p.Record, ResearchRecordArrivalComparer.Instance);
+            foreach (var entry in timeline)
             {
+                if (!entry.IsCombat)
+                {
+                    var record = pendingRecords[entry.Index];
+                    state.SeenRecords.Add(record.Location, record.Fingerprint);
+                    RecordPublished?.Invoke(snapshot.EpochId, record.Record); continue;
+                }
+                var item = pending[entry.Index];
                 state.Seen.Add(item.Location, (item.Fingerprint, item.Association.Status));
                 Published?.Invoke(new(snapshot.EpochId, item.Event, item.Association, ++PublishedCount, item.Fingerprint));
             }
+        }
         if (state.Poisoned || snapshot.Lifecycle is not ("Active" or "HalfClosed"))
         {
             state.Ended = true;
             state.Seen.Clear(); // Epoch IDs cannot recur; release dedup history once publication ends.
             state.Seen.TrimExcess();
+            state.SeenRecords.Clear(); state.SeenRecords.TrimExcess();
             EpochEnded?.Invoke(snapshot.EpochId);
         }
         return !state.Poisoned;
@@ -106,6 +147,15 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     // RecordId / container record ordinals change when outbound history grows. Locations do not.
     private static string Location(DamageEvent e) => $"{e.Provenance.Direction}/{e.Provenance.OuterFrameOffset}/{e.Provenance.StreamOffset}/" +
         string.Join('/', e.Provenance.ContainerPath.Select(p => p.InnerOffset));
+    private static string Location(RawProtocolRecord r) => $"{r.Direction}/{r.OuterFrameOffset}/{r.StreamOffset}/" +
+        string.Join('/', r.ContainerPath.Select(p => p.InnerOffset));
+    private static RawProtocolRecord OrderingRecord(DamageEvent e)
+    {
+        var p = e.Provenance;
+        return new(p.RecordId, p.CaptureScope, p.Direction, p.StreamOffset, p.OuterFrameId, p.OuterFrameOffset,
+            p.Timestamp, p.PacketIndex, p.CompletionPacketIndex, p.CompletionTimestamp, p.PrefixLength,
+            p.FrameLength, [], p.RecordTag, p.ContainerPath.Select(c => new ContainerLocation(c.ContainerRecordId, c.InnerOffset)).ToArray(), "Supported", []);
+    }
 
     private static string CanonicalIdentity(DamageEvent e)
     {

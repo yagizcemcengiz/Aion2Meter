@@ -277,9 +277,9 @@ public sealed class LivePacketPipeline
             false, CurrentPlayerBindingStatus.Unknown, null, null, 0, 0, 0, 0, [], 0, gaps, conflicts, 0, 0, [warning],
             epoch.WaitingForFreshEpoch ? LiveIdentityRecoveryMethod.WaitingForFreshEpoch : LiveIdentityRecoveryMethod.None,
             DiscardedMidstreamPackets: epoch.DiscardedPackets, DiscardedMidstreamBytes: epoch.DiscardedBytes);
-        void Observe(ReplayDamageEventEpochAdapter? adapter = null)
+        void Observe(ReplayDamageEventEpochAdapter? adapter = null, IReadOnlyList<RawProtocolRecord>? records = null)
         {
-            if (combatFeed?.Observe(epoch.Snapshot!, adapter) == false && epoch.Fault is null)
+            if (combatFeed?.Observe(epoch.Snapshot!, adapter, records) == false && epoch.Fault is null)
             {
                 Fault(epoch, "Publication/binding provenance invalidated; fresh reconnect required.");
                 epoch.Dirty = false;
@@ -347,7 +347,7 @@ public sealed class LivePacketPipeline
                 adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved
                     ? epoch.StartedAfterMidstream ? LiveIdentityRecoveryMethod.FreshEpochAfterMidstreamStart : LiveIdentityRecoveryMethod.FreshInitialization
                     : LiveIdentityRecoveryMethod.None, adapter.Binding.ValidFrom);
-            Observe(adapter);
+            Observe(adapter, shared.Decoded.Records);
             if (checkpointRetention && epoch.Fault is null && adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved)
             {
                 epoch.Checkpoint.Binding = adapter.Binding;

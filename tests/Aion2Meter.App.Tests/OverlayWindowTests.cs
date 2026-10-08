@@ -100,6 +100,37 @@ public sealed class OverlayWindowTests
         Assert.Equal(before, after);
     });
 
+    [Fact]
+    public Task PartyRowsUseExistingTemplatesAndReuseBothControlsAcrossRefresh() => Sta(() =>
+    {
+        var snapshot = Combat with { Rows = Array.AsReadOnly(new[]
+        {
+            new OverlayRow("remote", 1, "Party Member", false, 700, 70m, 70m, 2),
+            new OverlayRow("self", 2, "Local Player", true, 300, 30m, 30m, 1)
+        }) };
+        using var diagnostics = new StringWriter(); using var listener = new TextWriterTraceListener(diagnostics);
+        PresentationTraceSources.DataBindingSource.Listeners.Add(listener);
+        try
+        {
+            var window = new OverlayWindow(new(), () => snapshot, () => {}, () => Task.CompletedTask);
+            window.ViewModel.Apply(snapshot); Layout(window);
+            var bars = Descendants((DependencyObject)window.Content).OfType<ProgressBar>()
+                .ToDictionary(b => ((OverlayRowViewModel)b.DataContext).Key);
+            Assert.Equal(2, bars.Count); Assert.Equal(70d, bars["remote"].Value); Assert.Equal(30d, bars["self"].Value);
+            Assert.True(window.ViewModel.Rows[1].IsSelf); Assert.Equal(2, window.ViewModel.Rows[1].Rank);
+            for (var i = 0; i < 5; i++)
+            {
+                window.ViewModel.Apply(snapshot with { Rows = Array.AsReadOnly(snapshot.Rows.Select(r => r with { TotalDamage = r.TotalDamage + i }).ToArray()) });
+                Layout(window);
+                var after = Descendants((DependencyObject)window.Content).OfType<ProgressBar>()
+                    .ToDictionary(b => ((OverlayRowViewModel)b.DataContext).Key);
+                Assert.Same(bars["remote"], after["remote"]); Assert.Same(bars["self"], after["self"]);
+            }
+            Assert.Equal("", diagnostics.ToString()); window.Close(); Pump(() => window.ClosedTask.IsCompleted);
+        }
+        finally { PresentationTraceSources.DataBindingSource.Listeners.Remove(listener); }
+    });
+
     private static void Layout(OverlayWindow window)
     {
         var content = (FrameworkElement)window.Content;

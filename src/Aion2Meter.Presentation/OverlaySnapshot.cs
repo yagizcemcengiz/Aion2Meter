@@ -32,11 +32,14 @@ public sealed record OverlaySnapshot(OverlayState State, string Status, string H
             meter.EntityId is null || string.IsNullOrWhiteSpace(meter.CharacterName)) return EmptyWithCoverage(Waiting);
         var state = meter.Status == "IN COMBAT" ? OverlayState.InCombat :
             meter.Status.StartsWith("IDLE", StringComparison.Ordinal) ? OverlayState.Idle : OverlayState.Ready;
-        var row = new OverlayRow($"{meter.EpochId}/{meter.EntityId}", 1, Clean(meter.CharacterName), true,
-            meter.TotalDamage, meter.Dps, 100m, meter.EncounterSelfHits);
+        var members = meter.Members ?? [new LiveMeterMemberSnapshot(meter.EntityId.Value, meter.CharacterName, true,
+            meter.TotalDamage, meter.Dps, 100m, meter.EncounterSelfHits, false)];
+        var rows = members.OrderByDescending(m => m.Dps ?? 0m).ThenBy(m => m.CharacterName, StringComparer.Ordinal)
+            .ThenBy(m => m.EntityId).Select((m, index) => new OverlayRow($"{meter.EpochId}/{m.EntityId}", index + 1,
+                Clean(m.CharacterName), m.IsSelf, m.TotalDamage, m.Dps, m.ContributionPercent, m.Hits)).ToArray();
         // Other/Unknown counts are diagnostics, never a source of display rows.
         return new(state, state == OverlayState.InCombat ? "In combat" : state == OverlayState.Idle ? "Last encounter" : "Ready",
-            "", meter.EncounterElapsedSeconds, coverage, meter.Coverage, Array.AsReadOnly(new[] { row }));
+            "", meter.EncounterElapsedSeconds, coverage, meter.Coverage, Array.AsReadOnly(rows));
     }
 
     private static string Clean(string value) => string.Concat(value.Where(c => !char.IsControl(c)).Take(128));

@@ -1,6 +1,6 @@
-# Aion2Meter — Phase 3Z
+# Aion2Meter — Phase 4A.1
 
-Windows üzerinde AION 2 için **pasif capture, offline protocol research, canlı Self console meter ve WPF DPS overlay** sağlar. Ortak TCP/framing/LZ4/decoder, doğrulanmış 06/26 DamageEvent'lerini işler; 0x36 desteklenmez. Overlay yalnız Self gösterir; party resolver henüz yoktur. Otomatik testler için oyunu açmanız gerekmez.
+Windows üzerinde AION 2 için **pasif capture, offline protocol research, canlı console meter ve WPF DPS overlay** sağlar. Ortak TCP/framing/LZ4/decoder, doğrulanmış 06/26 DamageEvent'lerini işler; 0x36 desteklenmez. Overlay solo Self'i, party'de bağımsız kimlik ve aktif üyelik kanıtıyla doğrulanan üyeleri gösterir. Random Other aktörler görünmez. Otomatik testler için oyunu açmanız gerekmez. [Phase 4A.1 belgesi](docs/phase4a1-party-current-dps.md) desteklenen lifecycle sınırlarını ve smoke testini açıklar.
 
 Build sonrasında normal uygulamayı açın, Ethernet/Wi-Fi adaptörünü seçin ve **Start Live Overlay** kullanın:
 
