@@ -1,5 +1,9 @@
 # Phase 4A.1 — validated party lifecycle and CURRENT DPS
 
+This records the Phase 4A.1 baseline. [Phase 4A.2](phase4a2-party-roster-recovery.md)
+adds the independently validated two-person initialization replacement; the older
+multi-member/reconnect limitation below applies to the Phase 4A.1 implementation.
+
 Solo shows resolved Self. Party rows require all three independent inbound facts:
 strict 4536 name/runtime identity, matching 0892 name/runtime/UUID/token association,
 and a complete 0D92 active-member announcement. Invitations alone do not qualify.

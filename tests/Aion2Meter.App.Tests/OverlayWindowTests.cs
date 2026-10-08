@@ -131,6 +131,31 @@ public sealed class OverlayWindowTests
         finally { PresentationTraceSources.DataBindingSource.Listeners.Remove(listener); }
     });
 
+    [Fact]
+    public Task ReconnectReplacesEpochRowsThenReusesRecoveredControls() => Sta(() =>
+    {
+        OverlaySnapshot Rows(string epoch, string local, string remote) => Combat with
+        {
+            Rows = Array.AsReadOnly(new[]
+            {
+                new OverlayRow(epoch + "/" + remote, 1, "Party Member", false, 700, 70m, 70m, 2),
+                new OverlayRow(epoch + "/" + local, 2, "Local Player", true, 300, 30m, 30m, 1)
+            })
+        };
+        var before = Rows("old", "200", "300"); var after = Rows("new", "201", "301");
+        var window = new OverlayWindow(new(), () => after, () => {}, () => Task.CompletedTask);
+        window.ViewModel.Apply(before); Layout(window); var old = window.ViewModel.Rows.ToArray();
+        window.ViewModel.Apply(OverlaySnapshot.Waiting); Layout(window); Assert.Empty(window.ViewModel.Rows);
+        window.ViewModel.Apply(after); Layout(window);
+        var recovered = Descendants((DependencyObject)window.Content).OfType<ProgressBar>().ToArray();
+        Assert.Equal(2, recovered.Length); Assert.DoesNotContain(window.ViewModel.Rows, r => old.Contains(r));
+        Assert.True(window.ViewModel.Rows[1].IsSelf);
+        for (var i = 0; i < 5; i++) { window.ViewModel.Apply(after); Layout(window); }
+        var refreshed = Descendants((DependencyObject)window.Content).OfType<ProgressBar>().ToArray();
+        Assert.All(recovered, bar => Assert.Contains(refreshed, current => ReferenceEquals(bar, current)));
+        window.Close(); Pump(() => window.ClosedTask.IsCompleted);
+    });
+
     private static void Layout(OverlayWindow window)
     {
         var content = (FrameworkElement)window.Content;

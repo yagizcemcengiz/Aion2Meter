@@ -58,6 +58,8 @@ public sealed class LiveCombatMeter
             epochs.Add(snapshot.EpochId, epoch = new() { Snapshot = snapshot, Roster = new(snapshot.EpochId) });
         }
         epoch.Snapshot = snapshot;
+        epoch.Roster.ObserveBinding(snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved ? snapshot.EntityId : null,
+            snapshot.CharacterName, snapshot.IdentityValidFrom);
         if (snapshot.Lifecycle == "Faulted")
         {
             epoch.Invalid = true; epoch.Active = false;
