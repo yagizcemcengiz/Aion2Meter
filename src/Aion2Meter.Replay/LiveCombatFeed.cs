@@ -83,7 +83,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         }
         if (state.Poisoned)
             snapshot = snapshot with { Lifecycle = "Faulted", BindingStatus = CurrentPlayerBindingStatus.Unknown,
-                EntityId = null, CharacterName = null,
+                EntityId = null, CharacterName = null, IdentityValidFrom = null, RecoveryMethod = LiveIdentityRecoveryMethod.None,
                 Warnings = [.. snapshot.Warnings, "Publication invalidated; discard this epoch's meter. Fresh reconnect required."] };
         state.WasResolved |= snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved;
         EpochObserved?.Invoke(snapshot);

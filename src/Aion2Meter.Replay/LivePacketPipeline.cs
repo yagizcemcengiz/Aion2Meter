@@ -9,12 +9,16 @@ namespace Aion2Meter.Replay;
 public sealed record LivePipelineLimits(long MaximumPayloadBytes = 64 * 1024 * 1024,
     int MaximumPackets = 250_000, int MaximumConnections = 8);
 
+public enum LiveIdentityRecoveryMethod { None, WaitingForFreshEpoch, FreshInitialization, FreshEpochAfterMidstreamStart }
+
 public sealed record LiveEpochSnapshot(string EpochId, TcpConnectionSelection Connection,
     uint? ClientIsn, uint? ServerIsn, string Lifecycle, bool ProtocolObserved,
     CurrentPlayerBindingStatus BindingStatus, ulong? EntityId, string? CharacterName,
     int AcceptedEvents, int SelfCount, int OtherCount, int UnknownCount,
     IReadOnlyList<ulong> RecentSelfAmounts, int UnsupportedCandidates, int Gaps, int Conflicts,
-    int DuplicateSegments, long OverlapBytes, IReadOnlyList<string> Warnings);
+    int DuplicateSegments, long OverlapBytes, IReadOnlyList<string> Warnings,
+    LiveIdentityRecoveryMethod RecoveryMethod = LiveIdentityRecoveryMethod.None,
+    DateTimeOffset? IdentityValidFrom = null, long DiscardedMidstreamPackets = 0, long DiscardedMidstreamBytes = 0);
 
 /// <summary>
 /// Single-consumer bounded live foundation. Diagnostic snapshots replace prior results; optional combat
@@ -39,6 +43,9 @@ public sealed class LivePacketPipeline
         public LiveEpochSnapshot? Snapshot;
         public LiveStreamCheckpoint Checkpoint { get; } = new();
         public CurrentPlayerBinding? LastBinding;
+        public bool WaitingForFreshEpoch;
+        public bool StartedAfterMidstream;
+        public long DiscardedPackets, DiscardedBytes;
         public int RetiredDuplicates, CommittedDuplicates;
         public long RetiredOverlap, CommittedOverlap;
     }
@@ -56,6 +63,7 @@ public sealed class LivePacketPipeline
     private long lastIndex, nextEpoch, bytes;
     private int packetCount;
     private bool completed;
+    private bool midstreamObserved;
     private DateTimeOffset? lastTimestamp;
     public double LastRecomputeMilliseconds { get; private set; }
     public double LastSnapshotMilliseconds { get; private set; }
@@ -115,6 +123,14 @@ public sealed class LivePacketPipeline
         epochs.TryGetValue(connection, out var epoch);
         var clientSyn = direction == TrafficDirection.ClientToServer && segment.Flags == TcpFlags.Syn;
         var serverSyn = direction == TrafficDirection.ServerToClient && segment.Flags.HasFlag(TcpFlags.Syn) && segment.Flags.HasFlag(TcpFlags.Ack);
+        // A genuine new client SYN supersedes only scopes whose initialization was missed.
+        // They hold no validated bytes or identity. Never evict a fresh/Resolved scope to make room.
+        if (clientSyn)
+            foreach (var waiting in epochs.Values.Where(e => e.WaitingForFreshEpoch).ToArray())
+            {
+                Retire(waiting, "SupersededByFreshHandshake");
+                if (ReferenceEquals(waiting, epoch)) epoch = null;
+            }
         // Repeated SYN during the same open handshake is a retransmission. A SYN after FIN, or a
         // changed ISN, starts a new scope. A changed server ISN cannot inherit the old client SYN.
         if (epoch is not null && (clientSyn && (epoch.ClientIsn != segment.SequenceNumber || epoch.HandshakeCompleted || epoch.Closing || epoch.Fault is not null) ||
@@ -129,6 +145,9 @@ public sealed class LivePacketPipeline
             { IgnoredPackets++; return; }
             if (epochs.Count >= limits.MaximumConnections) { RejectedFlows++; return; }
             epoch = new($"{input.SourceId}/epoch-{++nextEpoch}", connection, segment.TimestampUtc);
+            epoch.WaitingForFreshEpoch = !clientSyn;
+            midstreamObserved |= epoch.WaitingForFreshEpoch;
+            epoch.StartedAfterMidstream = clientSyn && midstreamObserved;
             epochs.Add(connection, epoch);
         }
         if (epoch.Fault is not null) return;
@@ -140,6 +159,15 @@ public sealed class LivePacketPipeline
             epoch.HandshakeCompleted = true;
         if (segment.IsTruncated)
         { Fault(epoch, "Truncated selected TCP packet; restart with a fresh epoch."); return; }
+        if (epoch.WaitingForFreshEpoch)
+        {
+            // No authoritative stream origin: do not retain or scan arbitrary midstream payload.
+            // Keep bounded endpoint/lifecycle counters while capture continues watching for SYN.
+            epoch.DiscardedPackets++; epoch.DiscardedBytes += segment.Payload.Length; epoch.Dirty = true;
+            if (segment.Flags.HasFlag(TcpFlags.Rst)) Retire(epoch, "Reset");
+            else if (segment.Flags.HasFlag(TcpFlags.Fin)) Retire(epoch, "MidstreamCloseObserved");
+            return;
+        }
         var isn = direction == TrafficDirection.ClientToServer ? epoch.ClientIsn : epoch.ServerIsn;
         if (this.checkpointRetention && epoch.Checkpoint.Binding is not null && epoch.ClientIsn is { } ci && epoch.ServerIsn is { } si)
         {
@@ -246,7 +274,9 @@ public sealed class LivePacketPipeline
         epoch.Dirty = false;
         LiveEpochSnapshot Empty(string warning, int gaps = 0, int conflicts = 0) => new(epoch.Id, epoch.Connection,
             epoch.ClientIsn, epoch.ServerIsn, epoch.Fault is null ? epoch.Closing ? "HalfClosed" : "Active" : "Faulted",
-            false, CurrentPlayerBindingStatus.Unknown, null, null, 0, 0, 0, 0, [], 0, gaps, conflicts, 0, 0, [warning]);
+            false, CurrentPlayerBindingStatus.Unknown, null, null, 0, 0, 0, 0, [], 0, gaps, conflicts, 0, 0, [warning],
+            epoch.WaitingForFreshEpoch ? LiveIdentityRecoveryMethod.WaitingForFreshEpoch : LiveIdentityRecoveryMethod.None,
+            DiscardedMidstreamPackets: epoch.DiscardedPackets, DiscardedMidstreamBytes: epoch.DiscardedBytes);
         void Observe(ReplayDamageEventEpochAdapter? adapter = null)
         {
             if (combatFeed?.Observe(epoch.Snapshot!, adapter) == false && epoch.Fault is null)
@@ -254,10 +284,13 @@ public sealed class LivePacketPipeline
                 Fault(epoch, "Publication/binding provenance invalidated; fresh reconnect required.");
                 epoch.Dirty = false;
                 epoch.Snapshot = epoch.Snapshot! with { Lifecycle = "Faulted", BindingStatus = CurrentPlayerBindingStatus.Unknown,
-                    EntityId = null, CharacterName = null, Warnings = [epoch.Fault!] };
+                    EntityId = null, CharacterName = null, IdentityValidFrom = null, RecoveryMethod = LiveIdentityRecoveryMethod.None,
+                    Warnings = [epoch.Fault!] };
             }
         }
         if (epoch.Fault is { } failure) { epoch.Snapshot = Empty(failure); Observe(); return; }
+        if (epoch.WaitingForFreshEpoch)
+        { epoch.Snapshot = Empty("Waiting for character identity. Initialization was missed; capture will automatically use the next fresh game connection. Midstream bytes are not decoded or retained."); Observe(); return; }
         if (epoch.ClientIsn is null || epoch.ServerIsn is null)
         { epoch.Snapshot = Empty("Port candidate; fresh SYN/SYN-ACK missing. Unknown identity and unproven framing origin; wait for reconnect."); Observe(); return; }
         try
@@ -310,7 +343,10 @@ public sealed class LivePacketPipeline
                     .Select(a => adapter.Events[a.InputIndex].Amount)).TakeLast(5).ToArray(),
                 (prior?.UnsupportedCandidates ?? 0) + shared.Decoded.CombatCandidates.Count(c => c.Status != "Supported"), gaps, conflicts,
                 epoch.RetiredDuplicates + epoch.CommittedDuplicates + shared.Streams.Sum(s => s.DuplicateSegments),
-                epoch.RetiredOverlap + epoch.CommittedOverlap + shared.Streams.Sum(s => s.OverlapBytes), warnings);
+                epoch.RetiredOverlap + epoch.CommittedOverlap + shared.Streams.Sum(s => s.OverlapBytes), warnings,
+                adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved
+                    ? epoch.StartedAfterMidstream ? LiveIdentityRecoveryMethod.FreshEpochAfterMidstreamStart : LiveIdentityRecoveryMethod.FreshInitialization
+                    : LiveIdentityRecoveryMethod.None, adapter.Binding.ValidFrom);
             Observe(adapter);
             if (checkpointRetention && epoch.Fault is null && adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved)
             {

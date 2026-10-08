@@ -19,7 +19,7 @@ public sealed class LiveMeterDashboard(TextWriter output, bool interactive, bool
         {
             "Aion2Meter LIVE | Ctrl+C stops",
             $"Character : {Clean(meter.CharacterName ?? "Unknown")}",
-            $"Binding   : {meter.BindingStatus} | EntityId: {meter.EntityId?.ToString(c) ?? "Unknown"}",
+            $"Binding   : {(meter.BindingStatus == Core.CurrentPlayerBindingStatus.Unknown ? "Waiting for identity..." : meter.BindingStatus.ToString())} | EntityId: {meter.EntityId?.ToString(c) ?? "Unknown"}",
             $"Status    : {meter.Status}",
             $"Encounter : {(int)elapsed.TotalMinutes:00}:{elapsed.Seconds:00}.{elapsed.Milliseconds / 100} (first to last Self hit)",
             $"Damage    : {meter.TotalDamage.ToString("N0", c)} | DPS: {meter.Dps?.ToString("N1", c) ?? "N/A"}",
@@ -30,7 +30,12 @@ public sealed class LiveMeterDashboard(TextWriter output, bool interactive, bool
             $"Transport : {(clean ? "clean" : "pending/fault")} | Gap {meter.Gaps} | Conflict {meter.Conflicts} | Duplicate {meter.DuplicateSegments}",
             $"Overlap   : {meter.OverlapBytes} bytes | Unsupported combat: {meter.UnsupportedCandidates}"
         };
-        if (verbose) { lines.Add(performance); lines.AddRange(meter.Warnings.Take(8).Select(w => "  " + Clean(w))); }
+        if (verbose)
+        {
+            lines.Add(performance);
+            lines.Add($"Recovery: {meter.RecoveryMethod} | ValidFrom: {meter.IdentityValidFrom?.ToString("O", c) ?? "Unknown"}");
+            lines.AddRange(meter.Warnings.Take(8).Select(w => "  " + Clean(w)));
+        }
         return lines.ToArray();
     }
 

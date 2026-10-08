@@ -6,7 +6,8 @@ public sealed record LiveMeterSnapshot(string? EpochId, string? CharacterName, u
     CurrentPlayerBindingStatus BindingStatus, string Status, decimal TotalDamage, double EncounterElapsedSeconds,
     decimal? Dps, long EncounterSelfHits, long SelfCount, long OtherCount, long UnknownCount,
     IReadOnlyList<ulong> RecentSelfAmounts, string Coverage, int Gaps, int Conflicts, int DuplicateSegments,
-    long OverlapBytes, int UnsupportedCandidates, IReadOnlyList<string> Warnings);
+    long OverlapBytes, int UnsupportedCandidates, IReadOnlyList<string> Warnings,
+    LiveIdentityRecoveryMethod RecoveryMethod = LiveIdentityRecoveryMethod.None, DateTimeOffset? IdentityValidFrom = null);
 
 /// <summary>Bounded aggregate accounting; only a published Self event can start or extend a fight.</summary>
 public sealed class LiveCombatMeter
@@ -99,12 +100,15 @@ public sealed class LiveCombatMeter
         var s = epoch.Snapshot;
         var elapsed = epoch.First is { } first && epoch.Last is { } stop ? Math.Max(0, (stop - first).TotalSeconds) : 0;
         var status = epoch.Invalid ? "UNTRUSTED - reconnect required" : epoch.Ended ? "STOPPED" :
-            s.BindingStatus != CurrentPlayerBindingStatus.Resolved ? "Waiting for fresh character identity..." :
+            s.BindingStatus == CurrentPlayerBindingStatus.Conflict ? "CONFLICT - Self meter paused" :
+            s.BindingStatus != CurrentPlayerBindingStatus.Resolved ? s.RecoveryMethod == LiveIdentityRecoveryMethod.WaitingForFreshEpoch
+                ? "Waiting for identity... next fresh game connection" : "Waiting for fresh character identity..." :
             epoch.Active ? "IN COMBAT" : epoch.First is null ? "READY" : "IDLE - last encounter";
         return new(s.EpochId, s.CharacterName, s.EntityId, s.BindingStatus, status, epoch.Total, elapsed,
             elapsed >= 0.001 && !epoch.Invalid ? epoch.Total / (decimal)elapsed : null,
             epoch.Hits, epoch.Self, epoch.Other, epoch.Unknown, epoch.Recent.Reverse().ToArray(), Coverage,
-            s.Gaps, s.Conflicts, s.DuplicateSegments, s.OverlapBytes, s.UnsupportedCandidates, s.Warnings);
+            s.Gaps, s.Conflicts, s.DuplicateSegments, s.OverlapBytes, s.UnsupportedCandidates, s.Warnings,
+            s.RecoveryMethod, s.IdentityValidFrom);
     }
 
     private static LiveMeterSnapshot Empty(string status) => new(null, null, null, CurrentPlayerBindingStatus.Unknown,

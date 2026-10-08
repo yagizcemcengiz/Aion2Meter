@@ -337,7 +337,7 @@ public sealed class LiveCombatMeterTests
     {
         var h = new Harness(); h.Initialize(); h.Frame(Hit());
         var state = h.Tick(); Assert.Equal(CurrentPlayerBindingStatus.Unknown, state.BindingStatus);
-        Assert.Equal(0m, state.TotalDamage); Assert.Contains("Waiting for fresh", state.Status); Assert.Empty(h.Events);
+        Assert.Equal(0m, state.TotalDamage); Assert.Contains("Waiting for identity", state.Status); Assert.Empty(h.Events);
     }
 
     [Fact]

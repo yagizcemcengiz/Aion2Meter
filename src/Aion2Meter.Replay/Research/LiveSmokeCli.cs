@@ -23,7 +23,7 @@ public static class LiveSmokeCli
     {
         output ??= Console.Out; error ??= Console.Error;
         var usage = meterMode ? "research live-meter --interface N [--port 13328] [--idle-seconds 30] [--json] [--verbose]\n" +
-            "research live-meter --list-interfaces\nStart before fresh world connection. Self only; partial 06/26 coverage.\n" +
+            "research live-meter --list-interfaces\nMay start mid-game; waits for authoritative identity on the next fresh game connection. Self only; partial 06/26 coverage.\n" +
             "ACKed complete-frame publication; Ctrl+C stops. Bounded 64 MiB / 250000 packets.\n" +
             "Elapsed/DPS use first-to-last completed Self hit; timeout closes the encounter." : Usage;
         if (args.Length == 1 && args[0] is "--help" or "-h") { output.WriteLine(usage); return 0; }
