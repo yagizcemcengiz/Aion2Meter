@@ -1,6 +1,14 @@
-# Aion2Meter — Phase 3A
+# Aion2Meter — Phase 3X
 
-Windows üzerinde AION 2 için ileride geliştirilebilecek bir DPS meter'ın **pasif capture, process endpoint discovery ve offline protocol research altyapısıdır**. Phase 3A, seçilen TCP bağlantısında zaman çizelgesi, sınırlı ham byte incelemesi, sequence karşılaştırması ve stream ordering sağlar. Bu sürümde DPS hesaplama, AION 2 application protocol decoding, combat parser veya overlay yoktur. Otomatik testler için oyunu açmanız gerekmez.
+Windows üzerinde AION 2 için **pasif capture, offline protocol research ve sınırlı coverage ile canlı Self console meter** sağlar. Ortak TCP/framing/LZ4/decoder, doğrulanmış 06/26 DamageEvent'lerini işler; 0x36 desteklenmez. WPF overlay yoktur. Otomatik testler için oyunu açmanız gerekmez.
+
+Canlı meter'ı fresh world bağlantısından önce başlatın:
+
+```powershell
+dotnet run --project src/Aion2Meter.Replay --no-build -- research live-meter --interface 7
+```
+
+Interface indeksini `research live-meter --list-interfaces` ile doğrulayabilirsiniz. `--idle-seconds 30`, `--port`, `--json` ve `--verbose` desteklenir. [Phase 3X belgesi](docs/phase3x-live-combat-meter.md) yayın/dedup, encounter/DPS tanımı, güven sınırları ve uzun oturum limitlerini açıklar. Mevcut `research live-smoke` uyumluluğu korunur; finite snapshot sayaçları toplanmamalıdır.
 
 ## Gereksinimler
 

@@ -8,8 +8,12 @@ public sealed record SharedProtocolResult(IReadOnlyList<ReassembledStream> Strea
 public static class SharedProtocolPipeline
 {
     public static SharedProtocolResult Decode(ResearchCapture capture, ProtocolDecodeLimits? limits = null)
-    {
-        var streams = Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
-        return new(streams, new ReplayProtocolDecoder(limits).Decode(capture.Path, streams, capture.OriginUtc));
-    }
+        => DecodeStreams(capture, Reassemble(capture), limits);
+
+    internal static IReadOnlyList<ReassembledStream> Reassemble(ResearchCapture capture) =>
+        Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
+
+    internal static SharedProtocolResult DecodeStreams(ResearchCapture capture,
+        IReadOnlyList<ReassembledStream> streams, ProtocolDecodeLimits? limits = null) =>
+        new(streams, new ReplayProtocolDecoder(limits).Decode(capture.Path, streams, capture.OriginUtc));
 }

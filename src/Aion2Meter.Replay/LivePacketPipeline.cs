@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using Aion2Meter.Capture;
 using Aion2Meter.Core;
 using Aion2Meter.Replay.Research;
@@ -16,8 +17,8 @@ public sealed record LiveEpochSnapshot(string EpochId, TcpConnectionSelection Co
     int DuplicateSegments, long OverlapBytes, IReadOnlyList<string> Warnings);
 
 /// <summary>
-/// Single-consumer, bounded live diagnostic foundation. Complete epoch snapshots replace prior results;
-/// they are not an append-only accounting feed. The finite replay stack is reused without a live parser.
+/// Single-consumer bounded live foundation. Diagnostic snapshots replace prior results; optional combat
+/// publication uses an ACKed complete-frame boundary. The finite shared stack remains the only parser.
 /// </summary>
 public sealed class LivePacketPipeline
 {
@@ -41,6 +42,7 @@ public sealed class LivePacketPipeline
     private readonly HashSet<IPAddress> localAddresses;
     private readonly ushort servicePort;
     private readonly LivePipelineLimits limits;
+    private readonly LiveCombatFeed? combatFeed;
     private readonly TcpResearchPacketReader reader = new();
     private readonly Dictionary<TcpConnectionSelection, Epoch> epochs = [];
     private readonly Queue<LiveEpochSnapshot> ended = [];
@@ -48,14 +50,22 @@ public sealed class LivePacketPipeline
     private long lastIndex, nextEpoch, bytes;
     private int packetCount;
     private bool completed;
+    private DateTimeOffset? lastTimestamp;
+    public double LastRecomputeMilliseconds { get; private set; }
+    public double LastSnapshotMilliseconds { get; private set; }
+    public long RecomputeCount { get; private set; }
+    public int SelectedPacketCount => packetCount;
+    public long RetainedPayloadBytes => bytes;
     public long MalformedPackets { get; private set; }
     public long UnsupportedPackets { get; private set; }
     public long IgnoredPackets { get; private set; }
     public long RejectedFlows { get; private set; }
 
-    public LivePacketPipeline(IEnumerable<IPAddress> localAddresses, ushort servicePort = 13328, LivePipelineLimits? limits = null)
+    public LivePacketPipeline(IEnumerable<IPAddress> localAddresses, ushort servicePort = 13328, LivePipelineLimits? limits = null,
+        LiveCombatFeed? combatFeed = null)
     {
         this.localAddresses = localAddresses.ToHashSet(); this.servicePort = servicePort; this.limits = limits ?? new();
+        this.combatFeed = combatFeed;
         if (this.localAddresses.Count == 0 || servicePort == 0 || this.limits.MaximumPayloadBytes < 1 ||
             this.limits.MaximumPackets < 1 || this.limits.MaximumConnections is < 1 or > 32)
             throw new ArgumentException("Local IP context, service port and positive bounded limits are required.");
@@ -72,6 +82,12 @@ public sealed class LivePacketPipeline
             throw new InvalidDataException("A pipeline requires one ordered, lossless source session.");
         }
         sourceId ??= input.SourceId; interfaceId ??= input.InterfaceId; lastIndex = input.PacketIndex;
+        if (combatFeed is not null && lastTimestamp is { } previousTime && input.Packet.TimestampUtc < previousTime)
+        {
+            FaultAll("Capture timestamps moved backwards; published arrival provenance cannot be revised.");
+            throw new InvalidDataException("Live publication requires nondecreasing capture timestamps.");
+        }
+        lastTimestamp = input.Packet.TimestampUtc;
         TcpSegment? segment;
         try { segment = reader.Read(input.Packet, input.PacketIndex); }
         catch (InvalidDataException) { MalformedPackets++; return; }
@@ -138,7 +154,9 @@ public sealed class LivePacketPipeline
 
     public IReadOnlyList<LiveEpochSnapshot> Snapshot()
     {
+        var started = Stopwatch.GetTimestamp();
         foreach (var epoch in epochs.Values) if (epoch.Dirty) Update(epoch);
+        LastSnapshotMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         return ended.Concat(epochs.Values.Select(e => e.Snapshot!)).ToArray();
     }
 
@@ -183,35 +201,69 @@ public sealed class LivePacketPipeline
     private void Retire(Epoch epoch, string lifecycle)
     {
         Update(epoch);
-        ended.Enqueue(epoch.Snapshot! with { Lifecycle = lifecycle });
+        var snapshot = epoch.Snapshot! with { Lifecycle = epoch.Snapshot!.Lifecycle == "Faulted" ? "Faulted" : lifecycle };
+        ended.Enqueue(snapshot);
+        combatFeed?.Observe(snapshot, null);
         while (ended.Count > limits.MaximumConnections) ended.Dequeue();
         Release(epoch); epochs.Remove(epoch.Connection);
     }
 
     private void Update(Epoch epoch)
     {
+        var started = Stopwatch.GetTimestamp();
+        try { UpdateCore(epoch); }
+        finally { LastRecomputeMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds; RecomputeCount++; }
+    }
+
+    private void UpdateCore(Epoch epoch)
+    {
         epoch.Dirty = false;
         LiveEpochSnapshot Empty(string warning, int gaps = 0, int conflicts = 0) => new(epoch.Id, epoch.Connection,
             epoch.ClientIsn, epoch.ServerIsn, epoch.Fault is null ? epoch.Closing ? "HalfClosed" : "Active" : "Faulted",
             false, CurrentPlayerBindingStatus.Unknown, null, null, 0, 0, 0, 0, [], 0, gaps, conflicts, 0, 0, [warning]);
-        if (epoch.Fault is { } failure) { epoch.Snapshot = Empty(failure); return; }
+        void Observe(ReplayDamageEventEpochAdapter? adapter = null)
+        {
+            if (combatFeed?.Observe(epoch.Snapshot!, adapter) == false && epoch.Fault is null)
+            {
+                Fault(epoch, "Publication/binding provenance invalidated; fresh reconnect required.");
+                epoch.Dirty = false;
+                epoch.Snapshot = epoch.Snapshot! with { Lifecycle = "Faulted", BindingStatus = CurrentPlayerBindingStatus.Unknown,
+                    EntityId = null, CharacterName = null, Warnings = [epoch.Fault!] };
+            }
+        }
+        if (epoch.Fault is { } failure) { epoch.Snapshot = Empty(failure); Observe(); return; }
         if (epoch.ClientIsn is null || epoch.ServerIsn is null)
-        { epoch.Snapshot = Empty("Port candidate; fresh SYN/SYN-ACK missing. Unknown identity and unproven framing origin; wait for reconnect."); return; }
+        { epoch.Snapshot = Empty("Port candidate; fresh SYN/SYN-ACK missing. Unknown identity and unproven framing origin; wait for reconnect."); Observe(); return; }
         try
         {
             var capture = Capture(epoch);
-            var shared = SharedProtocolPipeline.Decode(capture);
-            var gaps = shared.Streams.Sum(s => s.Gaps.Count); var conflicts = shared.Streams.Sum(s => s.Conflicts.Count);
-            var missingOrigin = shared.Streams.Any(s => s.DeclaredSpan != 0 && s.BaseSequence != unchecked(
+            var streams = SharedProtocolPipeline.Reassemble(capture);
+            var gaps = streams.Sum(s => s.Gaps.Count); var conflicts = streams.Sum(s => s.Conflicts.Count);
+            var missingOrigin = streams.Any(s => s.DeclaredSpan != 0 && s.BaseSequence != unchecked(
                 (s.Direction == TrafficDirection.ClientToServer ? epoch.ClientIsn!.Value : epoch.ServerIsn!.Value) + 1));
+            var pendingBytes = false;
+            if (combatFeed is not null)
+            {
+                if (conflicts != 0)
+                {
+                    Fault(epoch, "Conflicting TCP bytes invalidate live publication; fresh reconnect required.");
+                    epoch.Dirty = false; epoch.Snapshot = Empty(epoch.Fault!, gaps, conflicts); Observe(); return;
+                }
+                var stable = LivePublicationBoundary.Select(capture, streams, epoch.ClientIsn.Value, epoch.ServerIsn.Value);
+                pendingBytes = stable.Packets.Sum(p => p.Segment.Payload.Length) < capture.Packets.Sum(p => p.Segment.Payload.Length);
+                capture = stable;
+                // The exact shared stack decodes this prefix; no alternate framing or combat grammar.
+                streams = SharedProtocolPipeline.Reassemble(capture);
+            }
             // A later contiguous run after a gap is not independently known to start on a frame boundary.
-            if (gaps != 0 || conflicts != 0 || missingOrigin)
+            if (combatFeed is null && (gaps != 0 || conflicts != 0 || missingOrigin))
             { epoch.Snapshot = Empty("Incomplete/conflicting stream; wait for missing segments. No framing resynchronization.", gaps, conflicts); return; }
+            var shared = SharedProtocolPipeline.DecodeStreams(capture, streams);
             var adapter = ReplayDamageEventEpochAdapter.FromDecoded(capture, epoch.Connection, shared);
             var audit = new ReplayDamageEventBindingAssociator().Analyze(adapter.Events, adapter.Binding, adapter);
             var observed = shared.Decoded.Records.Any(r => r.Direction == TrafficDirection.ServerToClient &&
                 r.OpcodeCandidate is "1536" or "3336" && LocalInitializationExtractor.Extract(r).Count != 0) || shared.Decoded.CombatCandidates.Any(c => c.Status == "Supported");
-            var warnings = adapter.Binding.Diagnostics.Concat(shared.Decoded.Records.Where(r => r.DecodeStatus is
+            var warnings = adapter.Binding.Diagnostics.Concat(pendingBytes ? ["Waiting for contiguous complete frames and peer ACK; pending bytes are not published."] : Array.Empty<string>()).Concat(shared.Decoded.Records.Where(r => r.DecodeStatus is
                 "MalformedFraming" or "FailedContainer" or "ContainerWithUnparsedBytes" or "Suppressed").SelectMany(r => r.DecodeWarnings)).Distinct().Take(8).ToArray();
             epoch.Snapshot = new(epoch.Id, epoch.Connection, epoch.ClientIsn, epoch.ServerIsn,
                 epoch.Closing ? "HalfClosed" : "Active", observed, adapter.Binding.Status, adapter.Binding.EntityId, adapter.Binding.CharacterName,
@@ -220,8 +272,9 @@ public sealed class LivePacketPipeline
                     .Select(a => adapter.Events[a.InputIndex].Amount).ToArray(),
                 shared.Decoded.CombatCandidates.Count(c => c.Status != "Supported"), gaps, conflicts,
                 shared.Streams.Sum(s => s.DuplicateSegments), shared.Streams.Sum(s => s.OverlapBytes), warnings);
+            Observe(adapter);
         }
         catch (InvalidDataException ex)
-        { Fault(epoch, ex.Message); epoch.Dirty = false; epoch.Snapshot = Empty(ex.Message); }
+        { Fault(epoch, ex.Message); epoch.Dirty = false; epoch.Snapshot = Empty(ex.Message); Observe(); }
     }
 }

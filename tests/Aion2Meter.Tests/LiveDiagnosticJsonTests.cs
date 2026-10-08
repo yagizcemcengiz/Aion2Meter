@@ -93,14 +93,14 @@ public sealed class LiveDiagnosticJsonTests
     public void AllLiveJsonContractsRecursivelyContainOnlyExplicitSafeTypes()
     {
         var visited = new HashSet<Type>();
-        Visit(typeof(LiveDiagnosticStart)); Visit(typeof(LiveDiagnosticSnapshot));
+        Visit(typeof(LiveDiagnosticStart)); Visit(typeof(LiveDiagnosticSnapshot)); Visit(typeof(LiveMeterReport));
         void Visit(Type type)
         {
             if (!visited.Add(type)) return;
             if (Nullable.GetUnderlyingType(type) is { } inner) { Visit(inner); return; }
             if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>))
             { Visit(type.GetGenericArguments()[0]); return; }
-            if (type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(DateTimeOffset)) return;
+            if (type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal) || type == typeof(DateTimeOffset)) return;
             Assert.False(type.Namespace?.StartsWith("System.Net", StringComparison.Ordinal) == true,
                 "Framework networking object reached the JSON wire contract: " + type);
             Assert.StartsWith("Aion2Meter.", type.Namespace);

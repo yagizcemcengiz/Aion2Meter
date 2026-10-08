@@ -16,6 +16,7 @@ public static class ResearchCli
         "research self-binding --help (conservative fresh-epoch replay CurrentPlayer binding)\n" +
         "research self-association --help (finite replay event/binding association audit)\n" +
         "research live-smoke --help (passive Npcap shared-pipeline diagnostics)\n" +
+        "research live-meter --help (incremental Self console meter)\n" +
         "research action-windows|record-groups|compare-groups --help (offline action/record correlation)\n" +
         "Options: --timeline --payload --max-payload-bytes 64 --max-packets 200\n" +
         "  --from seconds --to seconds --direction out|in|both\n" +
@@ -26,6 +27,7 @@ public static class ResearchCli
     public static int Run(string[] args, TextWriter? output = null, TextWriter? error = null)
     {
         if (args.Length > 0 && args[0] == "live-smoke") return LiveSmokeCli.Run(args[1..], output, error);
+        if (args.Length > 0 && args[0] == "live-meter") return LiveSmokeCli.RunMeter(args[1..], output, error);
         if (args.Length > 0 && args[0] is "action-windows" or "record-groups" or "compare-groups") return ActionResearchCli.Run(args[0], args[1..], output, error);
         if (args.Length > 0 && args[0] == "blocks") return BlockResearchCli.Run(args[1..], output, error);
         if (args.Length > 0 && args[0] is "decode" or "containers") return ProtocolResearchCli.Run(args[1..], output, error);
