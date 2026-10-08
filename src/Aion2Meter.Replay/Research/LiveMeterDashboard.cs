@@ -28,10 +28,9 @@ public sealed class LiveMeterDashboard(TextWriter output, bool interactive, bool
             $"Recent Self: {(meter.RecentSelfAmounts.Count == 0 ? "-" : string.Join(", ", meter.RecentSelfAmounts))}",
             $"Coverage  : {meter.Coverage}",
             $"Transport : {(clean ? "clean" : "pending/fault")} | Gap {meter.Gaps} | Conflict {meter.Conflicts} | Duplicate {meter.DuplicateSegments}",
-            $"Overlap   : {meter.OverlapBytes} bytes | Unsupported combat: {meter.UnsupportedCandidates}",
-            performance
+            $"Overlap   : {meter.OverlapBytes} bytes | Unsupported combat: {meter.UnsupportedCandidates}"
         };
-        if (verbose) lines.AddRange(meter.Warnings.Take(8).Select(w => "  " + Clean(w)));
+        if (verbose) { lines.Add(performance); lines.AddRange(meter.Warnings.Take(8).Select(w => "  " + Clean(w))); }
         return lines.ToArray();
     }
 

@@ -44,14 +44,17 @@ public sealed class ReplayDamageEventEpochAdapter
     }
 
     internal static ReplayDamageEventEpochAdapter FromDecoded(ResearchCapture capture,
-        TcpConnectionSelection connection, SharedProtocolResult result, string? sessionId = null)
+        TcpConnectionSelection connection, SharedProtocolResult result, string? sessionId = null,
+        CurrentPlayerBinding? checkpointBinding = null, DateTimeOffset? closedAt = null, long? closedPacket = null)
     {
-        var binding = new ReplayCurrentPlayerBindingResolver().Resolve(capture, connection, result.Decoded.Records, sessionId);
+        var resolver = new ReplayCurrentPlayerBindingResolver();
+        var binding = checkpointBinding is null ? resolver.Resolve(capture, connection, result.Decoded.Records, sessionId)
+            : resolver.ContinueCheckpoint(checkpointBinding, capture, result.Decoded.Records, closedAt);
         var accepted = result.Decoded.CombatCandidates.Where(c => c.Status == "Supported").Select(SupportedCombatRecord.From)
             .OrderBy(c => c.RawRecord, ResearchRecordArrivalComparer.Instance);
         return new(binding, new DamageEventProjector().ProjectMany(accepted),
             [$"Selected finite decode: gaps={result.Streams.Sum(s => s.Gaps.Count)}; conflicts={result.Streams.Sum(s => s.Conflicts.Count)}; unsupported combat candidates={result.Decoded.CombatCandidates.Count(c => c.Status != "Supported")}."],
-            ClosurePacket(capture, binding));
+            closedPacket ?? ClosurePacket(capture, binding));
     }
 
     internal bool Contains(DamageEvent e) => Binding.Status == CurrentPlayerBindingStatus.Resolved && eventOccurrences.Contains(e);

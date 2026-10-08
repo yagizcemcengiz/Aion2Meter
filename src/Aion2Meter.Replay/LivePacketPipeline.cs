@@ -37,12 +37,18 @@ public sealed class LivePacketPipeline
         public long Bytes;
         public string? Fault;
         public LiveEpochSnapshot? Snapshot;
+        public LiveStreamCheckpoint Checkpoint { get; } = new();
+        public CurrentPlayerBinding? LastBinding;
+        public int RetiredDuplicates, CommittedDuplicates;
+        public long RetiredOverlap, CommittedOverlap;
     }
 
     private readonly HashSet<IPAddress> localAddresses;
     private readonly ushort servicePort;
     private readonly LivePipelineLimits limits;
     private readonly LiveCombatFeed? combatFeed;
+    private readonly bool checkpointRetention;
+    private long completedCheckpoints, completedRetiredBytes;
     private readonly TcpResearchPacketReader reader = new();
     private readonly Dictionary<TcpConnectionSelection, Epoch> epochs = [];
     private readonly Queue<LiveEpochSnapshot> ended = [];
@@ -56,16 +62,22 @@ public sealed class LivePacketPipeline
     public long RecomputeCount { get; private set; }
     public int SelectedPacketCount => packetCount;
     public long RetainedPayloadBytes => bytes;
+    public long CheckpointCount => completedCheckpoints + epochs.Values.Sum(e => e.Checkpoint.Count);
+    public long RetiredPayloadBytes => completedRetiredBytes + epochs.Values.Sum(e => e.Checkpoint.RetiredBytes);
+    public int VerificationBytes => epochs.Values.Sum(e => e.Checkpoint.VerificationBytes);
+    public int BindingEvidenceCount => epochs.Values.Sum(e => e.LastBinding?.Evidence.Count ?? 0);
+    public long BindingEvidenceBytes => epochs.Values.Sum(e => e.LastBinding?.Evidence.Sum(b => (long)Convert.FromBase64String(b.RawRecordBase64).Length) ?? 0);
     public long MalformedPackets { get; private set; }
     public long UnsupportedPackets { get; private set; }
     public long IgnoredPackets { get; private set; }
     public long RejectedFlows { get; private set; }
 
     public LivePacketPipeline(IEnumerable<IPAddress> localAddresses, ushort servicePort = 13328, LivePipelineLimits? limits = null,
-        LiveCombatFeed? combatFeed = null)
+        LiveCombatFeed? combatFeed = null, bool checkpointRetention = true)
     {
         this.localAddresses = localAddresses.ToHashSet(); this.servicePort = servicePort; this.limits = limits ?? new();
         this.combatFeed = combatFeed;
+        this.checkpointRetention = checkpointRetention && combatFeed is not null;
         if (this.localAddresses.Count == 0 || servicePort == 0 || this.limits.MaximumPayloadBytes < 1 ||
             this.limits.MaximumPackets < 1 || this.limits.MaximumConnections is < 1 or > 32)
             throw new ArgumentException("Local IP context, service port and positive bounded limits are required.");
@@ -129,7 +141,18 @@ public sealed class LivePacketPipeline
         if (segment.IsTruncated)
         { Fault(epoch, "Truncated selected TCP packet; restart with a fresh epoch."); return; }
         var isn = direction == TrafficDirection.ClientToServer ? epoch.ClientIsn : epoch.ServerIsn;
-        if (!segment.Flags.HasFlag(TcpFlags.Syn) && isn is { } origin &&
+        if (this.checkpointRetention && epoch.Checkpoint.Binding is not null && epoch.ClientIsn is { } ci && epoch.ServerIsn is { } si)
+        {
+            try
+            {
+                var originalLength = segment.Payload.Length;
+                segment = epoch.Checkpoint.ValidateAndTrim(segment, direction, ci, si);
+                epoch.RetiredOverlap += originalLength - segment.Payload.Length;
+                if (originalLength > 0 && segment.Payload.Length == 0) epoch.RetiredDuplicates++;
+            }
+            catch (InvalidDataException ex) { Fault(epoch, ex.Message); return; }
+        }
+        else if (!segment.Flags.HasFlag(TcpFlags.Syn) && isn is { } origin &&
             unchecked((int)(segment.SequenceNumber - (origin + 1))) is < 0 or > 64 * 1024 * 1024)
         { Fault(epoch, "Sequence outside bounded fresh epoch; possible stale session traffic."); return; }
         if (packetCount >= limits.MaximumPackets || bytes + segment.Payload.Length > limits.MaximumPayloadBytes)
@@ -191,11 +214,13 @@ public sealed class LivePacketPipeline
     {
         epoch.Fault = reason; epoch.Dirty = true;
         Release(epoch);
+        epoch.Checkpoint.Clear();
+        epoch.LastBinding = null;
     }
 
     private void Release(Epoch epoch)
     {
-        bytes -= epoch.Bytes; packetCount -= epoch.Packets.Count; epoch.Bytes = 0; epoch.Packets.Clear();
+        bytes -= epoch.Bytes; packetCount -= epoch.Packets.Count; epoch.Bytes = 0; epoch.Packets.Clear(); epoch.Packets.TrimExcess();
     }
 
     private void Retire(Epoch epoch, string lifecycle)
@@ -205,7 +230,8 @@ public sealed class LivePacketPipeline
         ended.Enqueue(snapshot);
         combatFeed?.Observe(snapshot, null);
         while (ended.Count > limits.MaximumConnections) ended.Dequeue();
-        Release(epoch); epochs.Remove(epoch.Connection);
+        completedCheckpoints += epoch.Checkpoint.Count; completedRetiredBytes += epoch.Checkpoint.RetiredBytes;
+        Release(epoch); epoch.Checkpoint.Clear(); epochs.Remove(epoch.Connection);
     }
 
     private void Update(Epoch epoch)
@@ -237,7 +263,9 @@ public sealed class LivePacketPipeline
         try
         {
             var capture = Capture(epoch);
-            var streams = SharedProtocolPipeline.Reassemble(capture);
+            var checkpoint = checkpointRetention && epoch.Checkpoint.Binding is not null ? epoch.Checkpoint : null;
+            var streams = checkpoint?.Reassemble(capture, epoch.ClientIsn.Value, epoch.ServerIsn.Value) ?? SharedProtocolPipeline.Reassemble(capture);
+            checkpoint?.CheckPrivacy(streams);
             var gaps = streams.Sum(s => s.Gaps.Count); var conflicts = streams.Sum(s => s.Conflicts.Count);
             var missingOrigin = streams.Any(s => s.DeclaredSpan != 0 && s.BaseSequence != unchecked(
                 (s.Direction == TrafficDirection.ClientToServer ? epoch.ClientIsn!.Value : epoch.ServerIsn!.Value) + 1));
@@ -249,32 +277,88 @@ public sealed class LivePacketPipeline
                     Fault(epoch, "Conflicting TCP bytes invalidate live publication; fresh reconnect required.");
                     epoch.Dirty = false; epoch.Snapshot = Empty(epoch.Fault!, gaps, conflicts); Observe(); return;
                 }
-                var stable = LivePublicationBoundary.Select(capture, streams, epoch.ClientIsn.Value, epoch.ServerIsn.Value);
+                var stable = LivePublicationBoundary.Select(capture, streams, epoch.ClientIsn.Value, epoch.ServerIsn.Value, checkpoint);
                 pendingBytes = stable.Packets.Sum(p => p.Segment.Payload.Length) < capture.Packets.Sum(p => p.Segment.Payload.Length);
                 capture = stable;
                 // The exact shared stack decodes this prefix; no alternate framing or combat grammar.
-                streams = SharedProtocolPipeline.Reassemble(capture);
+                streams = checkpoint?.Reassemble(capture, epoch.ClientIsn.Value, epoch.ServerIsn.Value) ?? SharedProtocolPipeline.Reassemble(capture);
             }
             // A later contiguous run after a gap is not independently known to start on a frame boundary.
             if (combatFeed is null && (gaps != 0 || conflicts != 0 || missingOrigin))
             { epoch.Snapshot = Empty("Incomplete/conflicting stream; wait for missing segments. No framing resynchronization.", gaps, conflicts); return; }
             var shared = SharedProtocolPipeline.DecodeStreams(capture, streams);
-            var adapter = ReplayDamageEventEpochAdapter.FromDecoded(capture, epoch.Connection, shared);
+            if (checkpointRetention && shared.Decoded.Records.Any(r => r.DecodeStatus is
+                "Suppressed" or "FailedContainer" or "ContainerWithUnparsedBytes" or "MalformedFraming" or "MalformedInnerFraming"))
+                throw new InvalidDataException("Unvalidated application/container prefix cannot be checkpointed; fresh reconnect required.");
+            var closure = epoch.Packets.FirstOrDefault(p => p.Segment.Flags.HasFlag(TcpFlags.Rst));
+            if (closure is null && epoch.ClientFin && epoch.ServerFin && FinAcknowledged(epoch, TrafficDirection.ClientToServer) && FinAcknowledged(epoch, TrafficDirection.ServerToClient))
+                closure = epoch.Packets.Last();
+            var adapter = ReplayDamageEventEpochAdapter.FromDecoded(capture, epoch.Connection, shared,
+                checkpointBinding: checkpoint?.Binding, closedAt: closure?.Segment.TimestampUtc, closedPacket: closure?.Segment.PacketIndex);
             var audit = new ReplayDamageEventBindingAssociator().Analyze(adapter.Events, adapter.Binding, adapter);
+            epoch.LastBinding = adapter.Binding;
             var observed = shared.Decoded.Records.Any(r => r.Direction == TrafficDirection.ServerToClient &&
                 r.OpcodeCandidate is "1536" or "3336" && LocalInitializationExtractor.Extract(r).Count != 0) || shared.Decoded.CombatCandidates.Any(c => c.Status == "Supported");
             var warnings = adapter.Binding.Diagnostics.Concat(pendingBytes ? ["Waiting for contiguous complete frames and peer ACK; pending bytes are not published."] : Array.Empty<string>()).Concat(shared.Decoded.Records.Where(r => r.DecodeStatus is
                 "MalformedFraming" or "FailedContainer" or "ContainerWithUnparsedBytes" or "Suppressed").SelectMany(r => r.DecodeWarnings)).Distinct().Take(8).ToArray();
+            var prior = checkpoint is null ? null : epoch.Snapshot;
             epoch.Snapshot = new(epoch.Id, epoch.Connection, epoch.ClientIsn, epoch.ServerIsn,
-                epoch.Closing ? "HalfClosed" : "Active", observed, adapter.Binding.Status, adapter.Binding.EntityId, adapter.Binding.CharacterName,
-                adapter.Events.Count, audit.SelfCount, audit.OtherCount, audit.UnknownCount,
-                audit.Associations.Where(a => a.Status == DamageEventPlayerAssociationStatus.Self).TakeLast(5)
-                    .Select(a => adapter.Events[a.InputIndex].Amount).ToArray(),
-                shared.Decoded.CombatCandidates.Count(c => c.Status != "Supported"), gaps, conflicts,
-                shared.Streams.Sum(s => s.DuplicateSegments), shared.Streams.Sum(s => s.OverlapBytes), warnings);
+                epoch.Closing ? "HalfClosed" : "Active", observed || prior?.ProtocolObserved == true, adapter.Binding.Status, adapter.Binding.EntityId, adapter.Binding.CharacterName,
+                (prior?.AcceptedEvents ?? 0) + adapter.Events.Count, (prior?.SelfCount ?? 0) + audit.SelfCount,
+                (prior?.OtherCount ?? 0) + audit.OtherCount, (prior?.UnknownCount ?? 0) + audit.UnknownCount,
+                (prior?.RecentSelfAmounts ?? []).Concat(audit.Associations.Where(a => a.Status == DamageEventPlayerAssociationStatus.Self)
+                    .Select(a => adapter.Events[a.InputIndex].Amount)).TakeLast(5).ToArray(),
+                (prior?.UnsupportedCandidates ?? 0) + shared.Decoded.CombatCandidates.Count(c => c.Status != "Supported"), gaps, conflicts,
+                epoch.RetiredDuplicates + epoch.CommittedDuplicates + shared.Streams.Sum(s => s.DuplicateSegments),
+                epoch.RetiredOverlap + epoch.CommittedOverlap + shared.Streams.Sum(s => s.OverlapBytes), warnings);
             Observe(adapter);
+            if (checkpointRetention && epoch.Fault is null && adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved)
+            {
+                epoch.Checkpoint.Binding = adapter.Binding;
+                var ends = epoch.Checkpoint.Commit(streams);
+                combatFeed!.CommitCheckpoint(epoch.Id, ends);
+                epoch.CommittedDuplicates += shared.Streams.Sum(s => s.DuplicateSegments);
+                epoch.CommittedOverlap += shared.Streams.Sum(s => s.OverlapBytes);
+                RetainTail(epoch);
+            }
         }
         catch (InvalidDataException ex)
         { Fault(epoch, ex.Message); epoch.Dirty = false; epoch.Snapshot = Empty(ex.Message); Observe(); }
+    }
+
+    private void RetainTail(Epoch epoch)
+    {
+        var kept = new List<ResearchPacket>();
+        // Preserve the latest ACK and half-close evidence, not all historical control packets.
+        var controls = new List<ResearchPacket>();
+        foreach (var d in Enum.GetValues<TrafficDirection>())
+        {
+            var peer = d == TrafficDirection.ClientToServer ? TrafficDirection.ServerToClient : TrafficDirection.ClientToServer;
+            var origin = epoch.Checkpoint.Sequence(peer, epoch.ClientIsn!.Value, epoch.ServerIsn!.Value);
+            var ack = epoch.Packets.Where(p => p.Direction == d && p.Segment.Flags.HasFlag(TcpFlags.Ack))
+                .OrderBy(p => unchecked((int)(p.Segment.AcknowledgmentNumber - origin))).ThenBy(p => p.Segment.PacketIndex).LastOrDefault();
+            if (ack is not null) controls.Add(ack);
+            var fin = epoch.Packets.FirstOrDefault(p => p.Direction == d && p.Segment.Flags.HasFlag(TcpFlags.Fin));
+            if (fin is not null)
+            {
+                controls.Add(fin);
+                var confirmation = epoch.Packets.FirstOrDefault(p => p.Direction != d && p.Segment.Flags.HasFlag(TcpFlags.Ack) &&
+                    p.Segment.AcknowledgmentNumber == unchecked(fin.Segment.SequenceNumber + (uint)fin.Segment.DeclaredPayloadLength + 1));
+                if (confirmation is not null) controls.Add(confirmation);
+            }
+        }
+        var indexes = controls.Select(p => p.Segment.PacketIndex).ToHashSet();
+        foreach (var packet in epoch.Packets)
+        {
+            var s = packet.Segment;
+            var sequence = epoch.Checkpoint.Sequence(packet.Direction, epoch.ClientIsn!.Value, epoch.ServerIsn!.Value);
+            var skip = (int)Math.Clamp(-(long)unchecked((int)(s.PayloadSequence - sequence)), 0, s.Payload.Length);
+            if (skip < s.Payload.Length || indexes.Contains(s.PacketIndex))
+                kept.Add(packet with { Segment = s with { SequenceNumber = unchecked(s.SequenceNumber + (uint)skip),
+                    Payload = s.Payload[skip..], DeclaredPayloadLength = s.DeclaredPayloadLength - skip } });
+        }
+        bytes -= epoch.Bytes; packetCount -= epoch.Packets.Count;
+        epoch.Packets.Clear(); epoch.Packets.AddRange(kept); epoch.Packets.TrimExcess();
+        epoch.Bytes = kept.Sum(p => (long)p.Segment.Payload.Length); bytes += epoch.Bytes; packetCount += kept.Count;
     }
 }

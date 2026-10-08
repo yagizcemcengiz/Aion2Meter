@@ -5,6 +5,29 @@ namespace Aion2Meter.Replay.Research;
 /// <summary>Stateless, fail-closed resolver for complete selected fresh replay epochs.</summary>
 public sealed class ReplayCurrentPlayerBindingResolver
 {
+    // Internal continuation of a binding attested by this resolver at an irreversible live checkpoint.
+    // No public supplied-binding recovery path. New initialization sequences retain fail-closed semantics.
+    internal CurrentPlayerBinding ContinueCheckpoint(CurrentPlayerBinding binding, ResearchCapture capture,
+        IReadOnlyList<RawProtocolRecord> records, DateTimeOffset? until)
+    {
+        if (binding.Status != CurrentPlayerBindingStatus.Resolved || binding.Scope?.SourceCapture != capture.Path)
+            throw new InvalidDataException("Checkpoint binding is not an attested resolved epoch.");
+        var invalid = records.Any(r => r.Direction == TrafficDirection.ServerToClient && r.DecodeStatus is
+            "Suppressed" or "FailedContainer" or "ContainerWithUnparsedBytes" or "MalformedFraming" or "MalformedInnerFraming");
+        var initialization = records.Where(r => r.Direction == TrafficDirection.ServerToClient && r.OpcodeCandidate is "1536" or "3336").ToArray();
+        var contradiction = initialization.Select(LocalInitializationExtractor.Extract).Any(e => e.Count == 1 &&
+            (e[0].EntityId != binding.EntityId || e[0].CharacterName != binding.CharacterName));
+        var status = contradiction ? CurrentPlayerBindingStatus.Conflict : invalid || initialization.Length != 0
+            ? CurrentPlayerBindingStatus.Unknown : CurrentPlayerBindingStatus.Resolved;
+        return new(status, binding.Scope, status == CurrentPlayerBindingStatus.Resolved ? binding.EntityId : null,
+            status == CurrentPlayerBindingStatus.Resolved ? binding.CharacterName : null, binding.CandidateObservedFrom,
+            status == CurrentPlayerBindingStatus.Resolved ? binding.ValidFrom : null,
+            status == CurrentPlayerBindingStatus.Resolved ? until : null,
+            capture.Packets.Count == 0 ? binding.EvidenceCoverageEnd : capture.Packets.Max(p => p.Segment.TimestampUtc),
+            binding.Evidence, [status == CurrentPlayerBindingStatus.Resolved
+                ? "Validated fresh-epoch initialization summary retained across ACKed checkpoints."
+                : "New initialization or invalid container invalidates checkpoint binding; no heuristic recovery."]);
+    }
     public CurrentPlayerBinding Analyze(ResearchCapture capture, TcpConnectionSelection connection,
         string? sessionId = null, ProtocolDecodeLimits? limits = null)
     {

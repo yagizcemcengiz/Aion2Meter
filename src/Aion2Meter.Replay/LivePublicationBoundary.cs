@@ -7,13 +7,14 @@ namespace Aion2Meter.Replay;
 internal static class LivePublicationBoundary
 {
     public static ResearchCapture Select(ResearchCapture capture, IReadOnlyList<ReassembledStream> observed,
-        uint clientIsn, uint serverIsn)
+        uint clientIsn, uint serverIsn, LiveStreamCheckpoint? checkpoint = null)
     {
         var ends = new Dictionary<TrafficDirection, long>();
         foreach (var stream in observed)
         {
-            var origin = unchecked((stream.Direction == TrafficDirection.ClientToServer ? clientIsn : serverIsn) + 1);
-            long contiguous = 0;
+            var cursor = checkpoint?.Cursor(stream.Direction) ?? 0;
+            var origin = unchecked((stream.Direction == TrafficDirection.ClientToServer ? clientIsn : serverIsn) + 1 + (uint)cursor);
+            long contiguous = cursor;
             if (stream.BaseSequence == origin)
                 foreach (var chunk in stream.Chunks)
                 {
@@ -23,7 +24,7 @@ internal static class LivePublicationBoundary
             var acknowledged = capture.Packets.Where(p => p.Direction != stream.Direction &&
                     p.Segment.Flags.HasFlag(TcpFlags.Ack))
                 .Select(p => (long)unchecked((int)(p.Segment.AcknowledgmentNumber - origin)))
-                .Where(offset => offset is >= 0 and <= 64 * 1024 * 1024).DefaultIfEmpty(0).Max();
+                .Where(offset => offset is >= 0 and <= 64 * 1024 * 1024).DefaultIfEmpty(0).Max() + cursor;
             var available = Math.Min(contiguous, acknowledged);
             var prefix = stream with
             {
@@ -33,15 +34,16 @@ internal static class LivePublicationBoundary
             };
             var extraction = CandidateBlockExtractor.Extract(prefix, capture.OriginUtc);
             ends[stream.Direction] = extraction.Blocks.LastOrDefault() is { } last
-                ? last.StreamOffset + last.Length : 0;
+                ? last.StreamOffset + last.Length : cursor;
         }
         // Keep packet/control provenance, but only expose bytes inside established frame boundaries.
         // No parsing, realignment or speculative flush is performed here.
         var packets = capture.Packets.Select(p =>
         {
             var s = p.Segment;
-            var origin = unchecked((p.Direction == TrafficDirection.ClientToServer ? clientIsn : serverIsn) + 1);
-            var offset = (long)unchecked((int)(s.PayloadSequence - origin));
+            var cursor = checkpoint?.Cursor(p.Direction) ?? 0;
+            var origin = unchecked((p.Direction == TrafficDirection.ClientToServer ? clientIsn : serverIsn) + 1 + (uint)cursor);
+            var offset = cursor + (long)unchecked((int)(s.PayloadSequence - origin));
             var length = offset < 0 ? 0 : (int)Math.Clamp(ends[p.Direction] - offset, 0, s.Payload.Length);
             return p with { Segment = s with { Payload = s.Payload[..length], DeclaredPayloadLength = length } };
         }).ToArray();

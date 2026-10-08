@@ -89,7 +89,7 @@ public static class LiveSmokeCli
                         else
                         {
                             var p = LiveMeterJson.Performance(pipeline, feed);
-                            dashboard!.Render(state, FormattableString.Invariant($"Tick {p.DiagnosticTickMilliseconds:F1}ms | Recompute {p.LastRecomputeMilliseconds:F1}ms | Published {p.PublishedEvents} | Retained {p.SelectedPackets} packets / {p.RetainedPayloadBytes} bytes"));
+                            dashboard!.Render(state, FormattableString.Invariant($"Tick {p.DiagnosticTickMilliseconds:F1}ms | Checkpoints {p.CheckpointCount} | Published {p.PublishedEvents} | Tail {p.SelectedPackets} packets / {p.RetainedPayloadBytes} bytes | Verify {p.VerificationBytes} bytes"));
                         }
                         return;
                     }

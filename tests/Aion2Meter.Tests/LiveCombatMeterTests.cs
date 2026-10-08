@@ -15,7 +15,7 @@ public sealed class LiveCombatMeterTests
 {
     private static readonly DateTimeOffset Start = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
     private static readonly IPAddress Local = IPAddress.Parse("192.0.2.5"), Remote = IPAddress.Parse("198.51.100.7");
-    private sealed class Harness(TimeSpan? timeout = null, LivePipelineLimits? limits = null, int eventLimit = 100_000)
+    internal sealed class Harness(TimeSpan? timeout = null, LivePipelineLimits? limits = null, int eventLimit = 100_000, bool checkpoints = true)
     {
         public LiveCombatFeed Feed { get; } = new(eventLimit);
         public LiveCombatMeter Meter { get; private set; } = null!;
@@ -28,7 +28,7 @@ public sealed class LiveCombatMeterTests
         public TimeSpan Step = TimeSpan.FromMilliseconds(10);
         public void Initialize()
         {
-            Meter = new(Feed, timeout); Pipeline = new([Local], limits: limits, combatFeed: Feed);
+            Meter = new(Feed, timeout); Pipeline = new([Local], limits: limits, combatFeed: Feed, checkpointRetention: checkpoints);
             Feed.Published += Events.Add;
         }
         public void Add(byte[] bytes, uint? sequence = null, bool server = true,
@@ -63,9 +63,9 @@ public sealed class LiveCombatMeterTests
         }
     }
 
-    private static Harness Fresh(TimeSpan? timeout = null, LivePipelineLimits? limits = null, int eventLimit = 100_000)
-    { var h = new Harness(timeout, limits, eventLimit); h.Initialize(); h.Handshake(); h.Bind(); return h; }
-    private static byte[] Hit(uint amount = 400, uint actor = 200, ulong[]? components = null, byte? category = null) =>
+    internal static Harness Fresh(TimeSpan? timeout = null, LivePipelineLimits? limits = null, int eventLimit = 100_000, bool checkpoints = true)
+    { var h = new Harness(timeout, limits, eventLimit, checkpoints); h.Initialize(); h.Handshake(); h.Bind(); return h; }
+    internal static byte[] Hit(uint amount = 400, uint actor = 200, ulong[]? components = null, byte? category = null) =>
         ReplayProtocolDecoderTests.Combat(amount, components ?? [], actor: actor, category: category ?? (components?.Length > 0 ? (byte)0x26 : (byte)0x06));
 
     [Fact]
@@ -311,7 +311,7 @@ public sealed class LiveCombatMeterTests
     [Fact]
     public void ResourceBoundStopsPublicationAndReleasesRawAndDedupMemory()
     {
-        var h = Fresh(eventLimit: 1); h.Frame(Hit()); h.Tick(); h.Frame(Hit());
+        var h = Fresh(eventLimit: 1, checkpoints: false); h.Frame(Hit()); h.Tick(); h.Frame(Hit());
         Assert.Contains("UNTRUSTED", h.Tick().Status); Assert.Single(h.Events);
         Assert.Equal(0, h.Feed.RetainedIdentities); Assert.Equal(0, h.Pipeline.RetainedPayloadBytes);
     }
@@ -319,7 +319,7 @@ public sealed class LiveCombatMeterTests
     [Fact]
     public void SelectedPacketBoundInvalidatesCommittedMeterInsteadOfSilentlyRollingIdentity()
     {
-        var h = Fresh(limits: new(MaximumPackets: 10)); h.Frame(Hit()); h.Tick();
+        var h = Fresh(limits: new(MaximumPackets: 10), checkpoints: false); h.Frame(Hit()); h.Tick();
         h.Frame(Hit()); var state = h.Tick(); Assert.Contains("UNTRUSTED", state.Status); Assert.Equal(0m, state.TotalDamage);
     }
 
@@ -348,7 +348,8 @@ public sealed class LiveCombatMeterTests
         Assert.Equal(400m, json.RootElement.GetProperty("Meter").GetProperty("TotalDamage").GetDecimal());
         Assert.Equal(Local.ToString(), json.RootElement.GetProperty("Diagnostics").GetProperty("Epochs")[0].GetProperty("Connection").GetProperty("LocalIp").GetString());
         var metrics = json.RootElement.GetProperty("Performance"); Assert.Equal(1, metrics.GetProperty("PublishedEvents").GetInt64());
-        Assert.True(metrics.GetProperty("SelectedPackets").GetInt32() > 0); Assert.True(metrics.GetProperty("RetainedPayloadBytes").GetInt64() > 0);
+        Assert.True(metrics.GetProperty("SelectedPackets").GetInt32() > 0); Assert.Equal(0, metrics.GetProperty("RetainedPayloadBytes").GetInt64());
+        Assert.True(metrics.GetProperty("CheckpointCount").GetInt64() > 0);
         Assert.True(metrics.GetProperty("DiagnosticTickMilliseconds").GetDouble() >= 0);
     }
 
@@ -357,7 +358,7 @@ public sealed class LiveCombatMeterTests
     {
         var h = Fresh(); h.Frame(Hit()); var state = h.Tick(); using var output = new StringWriter();
         using (var dashboard = new LiveMeterDashboard(output, true)) { dashboard.Render(state, "metrics"); dashboard.Render(state, "metrics"); }
-        var text = output.ToString(); Assert.StartsWith("\u001b[?25l", text); Assert.Contains("\u001b[13A", text);
+        var text = output.ToString(); Assert.StartsWith("\u001b[?25l", text); Assert.Contains("\u001b[12A", text);
         Assert.EndsWith("\u001b[?25h", text); Assert.DoesNotContain("\u001b[2J", text); Assert.Contains("Damage    : 400", text);
     }
 

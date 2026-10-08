@@ -18,6 +18,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         public bool Poisoned;
         public bool WasResolved;
         public bool Ended;
+        public long[] Retired { get; } = new long[2];
     }
     private readonly Dictionary<string, State> states = [];
     public event Action<LiveEpochSnapshot>? EpochObserved;
@@ -25,6 +26,20 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     public event Action<string>? EpochEnded;
     public long PublishedCount { get; private set; }
     public int RetainedIdentities => states.Values.Sum(s => s.Seen.Count);
+
+    internal void CommitCheckpoint(string epochId, IReadOnlyDictionary<TrafficDirection, long> ends)
+    {
+        var state = states[epochId];
+        if (state.Poisoned) throw new InvalidDataException("Cannot checkpoint invalid publication.");
+        foreach (var (direction, end) in ends)
+        {
+            if (end < state.Retired[(int)direction]) throw new InvalidDataException("Checkpoint cursor moved backwards.");
+            state.Retired[(int)direction] = end;
+        }
+        // Every observed event belongs to the complete committed prefix; transport watermarks replace
+        // identities, rather than evicting them by age or arbitrary count.
+        state.Seen.Clear(); state.Seen.TrimExcess();
+    }
 
     internal bool Observe(LiveEpochSnapshot snapshot, ReplayDamageEventEpochAdapter? adapter)
     {
@@ -49,6 +64,8 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
             foreach (var association in audit.Associations)
             {
                 var e = adapter.Events[association.InputIndex];
+                if (e.Provenance.OuterFrameOffset < state.Retired[(int)e.Provenance.Direction])
+                { state.Poisoned = true; break; }
                 var location = Location(e);
                 var fingerprint = CanonicalIdentity(e);
                 if (e.Provenance.CaptureScope != snapshot.EpochId || !occurrences.Add(location)) { state.Poisoned = true; break; }
