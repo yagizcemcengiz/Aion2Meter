@@ -16,9 +16,9 @@ Live DPS · Total Damage · Party Contribution · Automatic Class Detection
 
 ## English
 
-[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases)
+[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.1/Aion2Meter-v0.1.0-beta.1-win-x64.zip)
 
-*The Windows ZIP has not been published yet; this link currently opens the Releases page.*
+*The Windows x64 beta ZIP includes .NET. Npcap is required separately.*
 
 > **Beta:** protocol coverage is still being expanded. Some combat events may not yet be counted.
 
@@ -37,9 +37,9 @@ Aion2Meter uses Npcap to read AION 2 network traffic. Download the installer fro
 
 #### 2. Get the Windows ZIP
 
-**A beta Windows ZIP has not been published yet.** Check [GitHub Releases](https://github.com/yagizcemcengiz/Aion2Meter/releases) for availability; the repository is currently private.
+**Beta 1 is available.** Use the download button above or visit the [Beta 1 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.1) for release notes and the SHA-256 checksum.
 
-Once published, download the latest Windows ZIP and extract it to a folder. The planned Windows x64 package will include its .NET runtime; you will not need to install .NET, the .NET SDK or Visual Studio separately. Npcap is still required.
+Download the Windows x64 ZIP and extract the whole ZIP to a folder. The package includes its .NET runtime; you do not need to install .NET, the .NET SDK or Visual Studio separately. Npcap is still required.
 
 #### 3. Start Aion2Meter
 
@@ -111,9 +111,9 @@ Aion2Meter passively reads AION 2 network traffic through Npcap and calculates c
 
 AION 2 için Windows üzerinde çalışan hafif, gerçek zamanlı DPS ölçer.
 
-[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases)
+[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.1/Aion2Meter-v0.1.0-beta.1-win-x64.zip)
 
-*Windows ZIP henüz yayımlanmadı; bu bağlantı şimdilik Releases sayfasını açar.*
+*Windows x64 beta ZIP'i .NET içerir. Npcap ayrıca gereklidir.*
 
 > **Beta:** protokol desteği geliştirilmeye devam ediyor. Bazı savaş olayları henüz sayılmayabilir.
 
@@ -132,9 +132,9 @@ Aion2Meter, AION 2'nin ağ trafiğini okuyabilmek için Npcap kullanır. Kurulum
 
 #### 2. Windows ZIP dosyasını indir
 
-**Beta Windows ZIP dosyası henüz yayımlanmadı.** İndirme durumu için [GitHub Releases](https://github.com/yagizcemcengiz/Aion2Meter/releases) bölümünü kontrol et; repository şu anda private.
+**Beta 1 yayımlandı.** Yukarıdaki indirme düğmesini kullan; sürüm notları ve SHA-256 checksum için [Beta 1 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.1) sayfasını ziyaret et.
 
-Yayımlandığında en güncel Windows ZIP dosyasını indir ve normal bir klasöre çıkar. Planlanan Windows x64 paketi .NET çalışma zamanını içerecek; ayrıca .NET, .NET SDK veya Visual Studio kurman gerekmeyecek. Npcap yine gereklidir.
+Windows x64 ZIP dosyasını indir ve tamamını normal bir klasöre çıkar. Paket .NET çalışma zamanını içerir; ayrıca .NET, .NET SDK veya Visual Studio kurmana gerek yoktur. Npcap yine gereklidir.
 
 #### 3. Aion2Meter'ı çalıştır
 
@@ -202,7 +202,7 @@ Aion2Meter, Npcap üzerinden AION 2 ağ trafiğini pasif olarak okuyup savaş is
 
 ## Development
 
-Development requires Windows and the .NET 10 SDK (`global.json` selects 10.0.100 with `latestFeature` roll-forward). These tools are for developers, not the planned beta ZIP installation.
+Development requires Windows and the .NET 10 SDK (`global.json` selects 10.0.100 with `latestFeature` roll-forward). These tools are for developers, not the beta ZIP installation.
 
 From the repository root in PowerShell:
 
