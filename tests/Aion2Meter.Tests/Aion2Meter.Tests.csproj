@@ -12,5 +12,6 @@
     <ProjectReference Include="../../src/Aion2Meter.Core/Aion2Meter.Core.csproj" />
     <ProjectReference Include="../../src/Aion2Meter.Capture/Aion2Meter.Capture.csproj" />
     <ProjectReference Include="../../src/Aion2Meter.Replay/Aion2Meter.Replay.csproj" />
+    <ProjectReference Include="../../src/Aion2Meter.Presentation/Aion2Meter.Presentation.csproj" />
   </ItemGroup>
 </Project>

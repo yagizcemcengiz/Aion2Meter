@@ -1,7 +1,7 @@
 {
   "version": 1,
   "dependencies": {
-    "net10.0": {
+    "net10.0-windows7.0": {
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
         "requested": "[17.14.1, )",
@@ -109,6 +109,14 @@
         "contentHash": "yMb6vMESlSrE3Wfj7V6cjQ3S4TXdXpRqYeNEI3zsX31uTsGMJjEw6oD5F5u1cHnMptjhEECnmZSsPxB6ChZHDQ==",
         "dependencies": {
           "xunit.extensibility.core": "[2.9.3]"
+        }
+      },
+      "aion2meter.app": {
+        "type": "Project",
+        "dependencies": {
+          "Aion2Meter.Capture": "[1.0.0, )",
+          "Aion2Meter.Core": "[1.0.0, )",
+          "Aion2Meter.Presentation": "[1.0.0, )"
         }
       },
       "aion2meter.capture": {

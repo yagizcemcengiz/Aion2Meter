@@ -1,14 +1,16 @@
-# Aion2Meter — Phase 3X
+# Aion2Meter — Phase 3Z
 
-Windows üzerinde AION 2 için **pasif capture, offline protocol research ve sınırlı coverage ile canlı Self console meter** sağlar. Ortak TCP/framing/LZ4/decoder, doğrulanmış 06/26 DamageEvent'lerini işler; 0x36 desteklenmez. WPF overlay yoktur. Otomatik testler için oyunu açmanız gerekmez.
+Windows üzerinde AION 2 için **pasif capture, offline protocol research, canlı Self console meter ve WPF DPS overlay** sağlar. Ortak TCP/framing/LZ4/decoder, doğrulanmış 06/26 DamageEvent'lerini işler; 0x36 desteklenmez. Overlay yalnız Self gösterir; party resolver henüz yoktur. Otomatik testler için oyunu açmanız gerekmez.
 
-Canlı meter'ı fresh world bağlantısından önce başlatın:
+Build sonrasında normal uygulamayı açın, Ethernet/Wi-Fi adaptörünü seçin ve **Start Live Overlay** kullanın:
 
 ```powershell
-dotnet run --project src/Aion2Meter.Replay --no-build -- research live-meter --interface 7
+.\src\Aion2Meter.App\bin\Debug\net10.0-windows\Aion2Meter.App.exe
 ```
 
-Interface indeksini `research live-meter --list-interfaces` ile doğrulayabilirsiniz. `--idle-seconds 30`, `--port`, `--json` ve `--verbose` desteklenir. [Phase 3X belgesi](docs/phase3x-live-combat-meter.md) yayın/dedup, encounter/DPS tanımı, güven sınırları ve uzun oturum limitlerini açıklar. Mevcut `research live-smoke` uyumluluğu korunur; finite snapshot sayaçları toplanmamalıdır.
+Son geçerli adaptör identifier ile hatırlanır. Oyun ortasında başlatıldığında kimlik bekleyebilir; sonraki fresh world bağlantısında otomatik toparlanır. [Phase 3Z belgesi](docs/phase3z-wpf-live-overlay.md) overlay durumlarını, ayarları, mimariyi ve gerçek mob ile smoke adımlarını açıklar.
+
+Console `research live-meter` korunur. Interface indeksini `research live-meter --list-interfaces` ile doğrulayabilirsiniz; `--interface`, `--idle-seconds 30`, `--port`, `--json` ve `--verbose` desteklenir. [Phase 3X belgesi](docs/phase3x-live-combat-meter.md) encounter/DPS tanımını açıklar. [Phase 3Y.1 belgesi](docs/phase3y1-live-startup-recovery.md) bounded startup/recovery davranışını açıklar. Mevcut `research live-smoke` uyumluluğu korunur; finite snapshot sayaçları toplanmamalıdır.
 
 ## Gereksinimler
 
@@ -26,9 +28,11 @@ src/
   Aion2Meter.Core/       Endpoint/filter/session modelleri, metadata JSON, flow ve packet-size sayaçları
   Aion2Meter.Capture/    Windows IP Helper discovery, SharpPcap pasif capture ve pcap writer
   Aion2Meter.Replay/     Npcap gerektirmeyen offline flow analizi, protocol research ve TCP stream araçları
-  Aion2Meter.App/        WPF diagnostic ekranı
+  Aion2Meter.Presentation/ UI snapshot, row ViewModel, live session ve kullanıcı tercihleri
+  Aion2Meter.App/        WPF live DPS overlay ve diagnostic ekranı
 tests/
   Aion2Meter.Tests/      Deterministic unit testler ve offline native writer testi
+  Aion2Meter.App.Tests/  Windows STA üzerinde gerçek WPF template/binding/kapanış testleri
 ```
 
 ## Build ve test
@@ -64,16 +68,18 @@ Normal testler Npcap kullanmaz. `NpcapIntegration` kategorisindeki test yalnızc
 dotnet test --filter "Category!=NpcapIntegration"
 ```
 
-## WPF diagnostic uygulaması
+## WPF live overlay ve diagnostic uygulaması
 
-Yönetici PowerShell oturumunda workspace kökünden:
+Workspace kökünden (Npcap kurulumu gerektiriyorsa yönetici oturumunda):
 
 ```powershell
 . .\dev-env.ps1
 dotnet run --project src/Aion2Meter.App
 ```
 
-Build sonrasında `src/Aion2Meter.App/bin/Debug/net10.0-windows/Aion2Meter.App.exe` dosyasını **Run as administrator** ile de açabilirsiniz.
+Build sonrasında `src/Aion2Meter.App/bin/Debug/net10.0-windows/Aion2Meter.App.exe` dosyasını doğrudan açabilirsiniz. Npcap erişimi gerektiriyorsa **Run as administrator** kullanın. **Start Live Overlay** canlı meter'ı açar; ana pencereyi minimize edebilirsiniz. **Settings** ana kontrolleri getirir; **Stop Live Meter** capture'ı durdurur. Overlay'deki **×** meter'ı durdurup overlay'i kapatır; ana pencerenin kapanması bütün oturumu kapatır. Borderless/always-on-top overlay 200 ms aralıkla güncellenir; lock sürüklemeyi engeller, unlock erişilebilir kalır. Opacity, scale, konum ve adaptör `%LOCALAPPDATA%\Aion2Meter\overlay-settings.json` içinde saklanır; runtime identity saklanmaz.
+
+Aşağıdaki **Start Capture** akışı ayrı, isteğe bağlı research dosya kaydıdır. Live overlay ile aynı anda başlatılamaz.
 
 1. Açılışta Npcap durumu ve capture-capable yerel adaptörler yüklenir.
 2. Aktif Ethernet/Wi-Fi adaptörünü seçin. Friendly name, description, interface identifier, IPv4/IPv6 adresleri, MAC ve status mümkün olduğunca gösterilir. Npcap loopback/sanal adaptörlerinde bazı alanlar bulunmayabilir.

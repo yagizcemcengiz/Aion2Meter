@@ -3,9 +3,11 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Aion2Meter.Core/Aion2Meter.Core.csproj" />
     <ProjectReference Include="../Aion2Meter.Capture/Aion2Meter.Capture.csproj" />
+    <ProjectReference Include="../Aion2Meter.Presentation/Aion2Meter.Presentation.csproj" />
   </ItemGroup>
 </Project>

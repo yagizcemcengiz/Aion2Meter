@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="../Aion2Meter.Replay/Aion2Meter.Replay.csproj" /></ItemGroup>
+</Project>

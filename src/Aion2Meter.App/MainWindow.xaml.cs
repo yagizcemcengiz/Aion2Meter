@@ -34,6 +34,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
         DataContext = this;
+        InitializeLiveControls();
         CaptureDirectory = Path.Combine(FindProjectRoot(), "captures");
         engine.Diagnostic += OnDiagnostic;
         timer.Tick += (_, _) => UpdateStatistics();
@@ -71,6 +72,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
+        await LoadOverlaySettingsAsync();
+        if (closing) return;
         await RefreshAsync();
         if (!closing) await RefreshProcessesAsync();
     }
@@ -112,13 +115,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UpdateControls();
         try
         {
-            var identifier = SelectedAdapter?.Identifier;
+            var identifier = SelectedAdapter?.Identifier ?? overlaySettings.AdapterIdentifier;
             var result = await Task.Run(discovery.Discover);
             npcapReady = result.NpcapReady;
             NpcapStatus = result.NpcapReady ? "Ready" : "Missing";
             Adapters.Clear();
             foreach (var adapter in result.Adapters) Adapters.Add(adapter);
-            SelectedAdapter = Adapters.FirstOrDefault(a => a.Identifier == identifier);
+            SelectedAdapter = Presentation.OverlaySettings.SelectAdapter(Adapters, identifier);
             StatusMessage = result.Error ?? (Adapters.Count == 0 ? "No capture-capable adapters found." : "Select your active Ethernet or Wi-Fi adapter.");
             AddLog(result.Error is null ? "Info" : "Error", result.Error ?? $"Found {Adapters.Count} capture adapters.");
         }
@@ -128,6 +131,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void StartClicked(object sender, RoutedEventArgs e)
     {
+        if (liveSession?.IsRunning == true) { StatusMessage = "Stop the live meter before starting capture research."; return; }
         if (SelectedAdapter is not { } adapter) { StatusMessage = "Select a network adapter first."; return; }
         busy = true;
         UpdateControls();
@@ -235,13 +239,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void UpdateControls()
     {
         if (!IsInitialized) return;
-        var editable = !busy && !closing && !engine.IsRunning;
+        var live = liveSession?.IsRunning == true;
+        var editable = !busy && !closing && !engine.IsRunning && !live;
         RefreshButton.IsEnabled = AdapterCombo.IsEnabled = editable;
         ProcessRefreshButton.IsEnabled = ConnectionsRefreshButton.IsEnabled = ProcessCombo.IsEnabled = editable;
         CaptureModeCombo.IsEnabled = SessionLabelBox.IsEnabled = UserNotesBox.IsEnabled = editable;
-        StartButton.IsEnabled = !busy && !closing && !engine.IsRunning && npcapReady && SelectedAdapter is not null;
+        StartButton.IsEnabled = editable && npcapReady && SelectedAdapter is not null;
         StopButton.IsEnabled = !busy && !closing && engine.IsRunning;
         CountdownButton.IsEnabled = !busy && !closing && engine.IsRunning && cueCancellation is null;
+        UpdateLiveControls();
     }
 
     private void OnDiagnostic(DiagnosticMessage message)
@@ -284,8 +290,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         cueCancellation?.Cancel();
         UpdateControls();
         timer.Stop();
+        overlaySaveTimer.Stop();
         while (busy) await Task.Delay(50);
         await cueTask;
+        await StopLiveAsync();
+        if (overlay is { } window) { window.Close(); await window.ClosedTask; }
+        await settingsWriteTask;
+        if (settingsLoaded) await PersistOverlaySettingsAsync(overlaySettings);
         try { await engine.DisposeAsync(); }
         catch (Exception ex)
         {
