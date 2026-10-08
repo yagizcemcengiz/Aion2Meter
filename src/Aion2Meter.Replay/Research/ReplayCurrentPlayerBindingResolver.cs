@@ -6,7 +6,8 @@ namespace Aion2Meter.Replay.Research;
 public sealed class ReplayCurrentPlayerBindingResolver
 {
     // Internal continuation of a binding attested by this resolver at an irreversible live checkpoint.
-    // No public supplied-binding recovery path. New initialization sequences retain fail-closed semantics.
+    // No public supplied-binding recovery path. Only a same-identity, same-field-layout 3336 refresh
+    // may continue an already attested epoch; 1536, changed assignments and unknown layouts fail closed.
     internal CurrentPlayerBinding ContinueCheckpoint(CurrentPlayerBinding binding, ResearchCapture capture,
         IReadOnlyList<RawProtocolRecord> records, DateTimeOffset? until)
     {
@@ -17,7 +18,28 @@ public sealed class ReplayCurrentPlayerBindingResolver
         var initialization = records.Where(r => r.Direction == TrafficDirection.ServerToClient && r.OpcodeCandidate is "1536" or "3336").ToArray();
         var contradiction = initialization.Select(LocalInitializationExtractor.Extract).Any(e => e.Count == 1 &&
             (e[0].EntityId != binding.EntityId || e[0].CharacterName != binding.CharacterName));
-        var status = contradiction ? CurrentPlayerBindingStatus.Conflict : invalid || initialization.Length != 0
+        var anchor = binding.QualifyingEvidence.Where(e => e.RecordTag == "3336").ToArray();
+        var packets = capture.Packets.ToDictionary(p => p.Segment.PacketIndex);
+        var lookup = records.GroupBy(r => r.RecordId).ToDictionary(g => g.Key, g => g.First());
+        bool AttestedRefresh(RawProtocolRecord record)
+        {
+            if (anchor.Length != 1 || record.OpcodeCandidate != "3336" || binding.ValidFrom is not { } from ||
+                record.TimestampUtc < from || until is { } stop && record.CompletionUtc > stop ||
+                !ValidProvenance(record, capture, packets, lookup, binding.Scope.ClientSynTimestamp ?? from)) return false;
+            var matches = LocalInitializationExtractor.Extract(record).Where(e => e.EntityId == binding.EntityId &&
+                StringComparer.Ordinal.Equals(e.CharacterName, binding.CharacterName)).ToArray();
+            if (matches.Length != 1) return false;
+            var current = matches[0]; var prior = anchor[0];
+            // Relative to the canonical leading ID, so an opaque body growing across a length-prefix
+            // width boundary does not move the established identity fields. Never search a new layout.
+            return current.NumericRange.Offset == record.PrefixLength + 2 &&
+                current.NumericRange.Length == prior.NumericRange.Length &&
+                current.NumericRepresentation == prior.NumericRepresentation &&
+                current.NameLengthOffset - current.NumericRange.Offset == prior.NameLengthOffset - prior.NumericRange.Offset &&
+                current.NameRange.Offset - current.NumericRange.Offset == prior.NameRange.Offset - prior.NumericRange.Offset &&
+                current.NameRange.Length == prior.NameRange.Length;
+        }
+        var status = contradiction ? CurrentPlayerBindingStatus.Conflict : invalid || !initialization.All(AttestedRefresh)
             ? CurrentPlayerBindingStatus.Unknown : CurrentPlayerBindingStatus.Resolved;
         return new(status, binding.Scope, status == CurrentPlayerBindingStatus.Resolved ? binding.EntityId : null,
             status == CurrentPlayerBindingStatus.Resolved ? binding.CharacterName : null, binding.CandidateObservedFrom,
@@ -25,7 +47,8 @@ public sealed class ReplayCurrentPlayerBindingResolver
             status == CurrentPlayerBindingStatus.Resolved ? until : null,
             capture.Packets.Count == 0 ? binding.EvidenceCoverageEnd : capture.Packets.Max(p => p.Segment.TimestampUtc),
             binding.Evidence, [status == CurrentPlayerBindingStatus.Resolved
-                ? "Validated fresh-epoch initialization summary retained across ACKed checkpoints."
+                ? initialization.Length == 0 ? "Validated fresh-epoch initialization summary retained across ACKed checkpoints."
+                    : "Complete same-identity 3336 refresh agrees with attested field layout in this ACKed TCP epoch."
                 : "New initialization or invalid container invalidates checkpoint binding; no heuristic recovery."]);
     }
     public CurrentPlayerBinding Analyze(ResearchCapture capture, TcpConnectionSelection connection,

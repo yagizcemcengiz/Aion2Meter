@@ -5,11 +5,11 @@ namespace Aion2Meter.Presentation;
 
 public enum OverlayState { Waiting, Ready, InCombat, Idle, Unavailable, Stopped }
 public sealed record OverlayRow(string Key, int Rank, string DisplayName, bool IsSelf,
-    decimal TotalDamage, decimal? Dps, decimal ContributionPercent, long SelfEvents);
+    decimal TotalDamage, decimal? Dps, decimal ContributionPercent, long SelfEvents, PlayerClass Class = PlayerClass.Unknown);
 
 /// <summary>Presentation only. No packets, transport objects, actor dictionaries or mutable backend state.</summary>
 public sealed record OverlaySnapshot(OverlayState State, string Status, string Hint, double ElapsedSeconds,
-    string Coverage, string CoverageDetails, IReadOnlyList<OverlayRow> Rows)
+    string Coverage, string CoverageDetails, IReadOnlyList<OverlayRow> Rows, double? NetworkRttMilliseconds = null)
 {
     public static OverlaySnapshot Waiting { get; } = Empty(OverlayState.Waiting,
         "Waiting for character identity...", "Will recover on the next fresh world connection.");
@@ -35,8 +35,8 @@ public sealed record OverlaySnapshot(OverlayState State, string Status, string H
         var members = meter.Members ?? [new LiveMeterMemberSnapshot(meter.EntityId.Value, meter.CharacterName, true,
             meter.TotalDamage, meter.Dps, 100m, meter.EncounterSelfHits, false)];
         var rows = members.OrderByDescending(m => m.Dps ?? 0m).ThenBy(m => m.CharacterName, StringComparer.Ordinal)
-            .ThenBy(m => m.EntityId).Select((m, index) => new OverlayRow($"{meter.EpochId}/{m.EntityId}", index + 1,
-                Clean(m.CharacterName), m.IsSelf, m.TotalDamage, m.Dps, m.ContributionPercent, m.Hits)).ToArray();
+            .ThenBy(m => m.EntityId).Select((m, index) => new OverlayRow($"{meter.EpochId}/{m.MembershipKey ?? m.EntityId?.ToString(System.Globalization.CultureInfo.InvariantCulture)}", index + 1,
+                Clean(m.CharacterName), m.IsSelf, m.TotalDamage, m.Dps, m.ContributionPercent, m.Hits, m.Class)).ToArray();
         // Other/Unknown counts are diagnostics, never a source of display rows.
         return new(state, state == OverlayState.InCombat ? "In combat" : state == OverlayState.Idle ? "Last encounter" : "Ready",
             "", meter.EncounterElapsedSeconds, coverage, meter.Coverage, Array.AsReadOnly(rows));

@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Aion2Meter.App;
 using Aion2Meter.Presentation;
@@ -11,8 +12,90 @@ using Xunit;
 
 namespace Aion2Meter.App.Tests;
 
+[Collection("WPF")]
 public sealed class OverlayWindowTests
 {
+    [Fact]
+    public Task ProductControlsResetResizeAndPreviewWithoutStoppingCapture() => Sta(() =>
+    {
+        var resets = 0; var stops = 0; var window = new OverlayWindow(new(), () => Combat, () => {},
+            () => { stops++; return Task.CompletedTask; }, () => resets++);
+        window.ViewModel.Apply(Combat); Layout(window);
+        ((Button)window.FindName("ResetButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert.Equal(1, resets); Assert.Equal(0, stops);
+        var grip = (Thumb)window.FindName("ResizeGrip");
+        grip.RaiseEvent(new DragDeltaEventArgs(80, 60) { RoutedEvent = Thumb.DragDeltaEvent }); Layout(window);
+        Assert.InRange(((FrameworkElement)window.Content).DesiredSize.Width, 499, 502);
+        window.ApplySettings(new(Width: 360, Height: 260, Scale: .75)); Layout(window);
+        Assert.InRange(((FrameworkElement)window.Content).DesiredSize.Width, 269, 272);
+        window.Close(); Pump(() => window.ClosedTask.IsCompleted); Assert.Equal(1, stops);
+    });
+
+    [Fact]
+    public Task SettingsPreviewAndShortcutValidationUseTheSameProductPreferences() => Sta(() =>
+    {
+        var window = new OverlaySettingsWindow(new()); OverlaySettings? preview = null;
+        window.PreferencesChanged += value => preview = value;
+        ((Slider)window.FindName("OpacitySlider")).Value = .65; Assert.Equal(.65, preview!.Opacity);
+        ((Slider)window.FindName("ScaleSlider")).Value = 1.25; Assert.Equal(1.25, preview.Scale);
+        ((CheckBox)window.FindName("LockDragging")).IsChecked = true; Assert.True(preview.Locked);
+        window.Synchronize(new(Width: 550, Height: 250));
+        ((Slider)window.FindName("OpacitySlider")).Value = .7; Assert.Equal(550, preview.Width); Assert.Equal(250, preview.Height);
+        window.Finish();
+    });
+
+    [Fact]
+    public Task SettingsRenderAndAdvancedCannotStartADuplicateLiveOwner() => Sta(() =>
+    {
+        var window = new OverlaySettingsWindow(new());
+        window.UpdateSession(false, false, true, "Meter stopped", null);
+        Assert.False(((Button)window.FindName("StartButton")).IsEnabled);
+        var content = (FrameworkElement)window.Content;
+        content.Measure(new Size(438, double.PositiveInfinity)); content.Arrange(new Rect(0, 0, 438, content.DesiredSize.Height)); content.UpdateLayout();
+        Assert.InRange(content.DesiredSize.Height, 300, SystemParameters.WorkArea.Height);
+        if (Environment.GetEnvironmentVariable("AION2METER_UI_PREVIEWS") is { Length: > 0 } directory)
+        {
+            var bitmap = new RenderTargetBitmap(438, (int)Math.Ceiling(content.DesiredSize.Height), 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(content); Directory.CreateDirectory(directory); using var file = File.Create(Path.Combine(directory, "settings.png"));
+            var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); png.Save(file);
+        }
+        window.Finish();
+        var diagnostics = new MainWindow(productDiagnostics: true);
+        Assert.False(((Button)diagnostics.FindName("StartLiveButton")).IsEnabled);
+        Assert.False(((Button)diagnostics.FindName("ShowOverlayButton")).IsEnabled);
+        var closed = false; diagnostics.Closed += (_, _) => closed = true;
+        diagnostics.Close(); Pump(() => closed);
+    });
+
+    [Theory]
+    [InlineData("party", 420, 1)]
+    [InlineData("narrow", 360, .75)]
+    [InlineData("wide", 640, 1.5)]
+    [InlineData("waiting", 420, 1)]
+    [InlineData("untrusted", 420, 1)]
+    [InlineData("stopped", 420, 1)]
+    public Task RenderProductAtRealWpfLayoutBounds(string mode, double width, double scale) => Sta(() =>
+    {
+        var snapshot = mode == "waiting" ? OverlaySnapshot.Waiting : mode == "untrusted" ? OverlaySnapshot.Unavailable :
+            mode == "stopped" ? OverlaySnapshot.Stopped : Combat with { NetworkRttMilliseconds = 84, Rows = Array.AsReadOnly(new[]
+            {
+                new OverlayRow("remote", 1, "Jeffjen", false, 70000, 5468.75m, 70m, 2),
+                new OverlayRow("self", 2, "Yaaz", true, 30000, 2343.75m, 30m, 1)
+            }) };
+        var window = new OverlayWindow(new(Width: width, Scale: scale), () => snapshot, () => {}, () => Task.CompletedTask);
+        window.ViewModel.Apply(snapshot); Layout(window);
+        var content = (FrameworkElement)window.Content;
+        Assert.InRange(content.DesiredSize.Width, width * scale - 1, width * scale + 2);
+        Assert.True(content.DesiredSize.Height >= 150 * scale);
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(content.DesiredSize.Width), (int)Math.Ceiling(content.DesiredSize.Height), 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(content);
+        if (Environment.GetEnvironmentVariable("AION2METER_UI_PREVIEWS") is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory); using var file = File.Create(Path.Combine(directory, mode + ".png"));
+            var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); png.Save(file);
+        }
+        window.Close(); Pump(() => window.ClosedTask.IsCompleted);
+    });
     private static OverlaySnapshot Combat => new(OverlayState.InCombat, "In combat", "", 12.8,
         "Coverage: Partial", "PARTIAL - 06/26 supported; 0x36 pending",
         Array.AsReadOnly(new[] { new OverlayRow("test-scope", 1, "Test Player", true, 123456, 9645m, 100, 12) }));
@@ -41,7 +124,7 @@ public sealed class OverlayWindowTests
                 var bar = Assert.Single(tree.OfType<ProgressBar>()); Assert.Equal(100d, bar.Value);
                 var name = Assert.Single(tree.OfType<TextBlock>(), t => t.Text == "Test Player");
                 Assert.Equal(Color.FromRgb(0xE9, 0xED, 0xF5), ((SolidColorBrush)name.Foreground).Color);
-                Assert.Contains(tree.OfType<TextBlock>(), t => t.Text == "ME");
+                Assert.Contains(tree.OfType<TextBlock>(), t => t.Text == "YOU");
             }
             else Assert.Empty(tree.OfType<ProgressBar>());
             Assert.Equal("", diagnostics.ToString());
@@ -64,15 +147,13 @@ public sealed class OverlayWindowTests
     });
 
     [Fact]
-    public Task LockRemainsRecoverableAndScaleAndOpacityApplyToWindow() => Sta(() =>
+    public Task LockDisablesResizeAndSettingsCanUnlockWithLiveScaleAndOpacity() => Sta(() =>
     {
         var window = new OverlayWindow(new(Locked: true, Opacity: .6, Scale: 1.5), () => OverlaySnapshot.Waiting, () => {}, () => Task.CompletedTask);
-        var button = (Button)window.FindName("LockButton"); Assert.Equal("Locked", button.Content);
-        Assert.True(button.IsEnabled); Assert.False(button.Focusable); Assert.Equal(.6, window.Opacity);
+        var grip = (Thumb)window.FindName("ResizeGrip"); Assert.False(grip.IsEnabled); Assert.Equal(.6, window.Opacity);
         Layout(window); Assert.InRange(((FrameworkElement)window.Content).DesiredSize.Width, 629, 632);
-        OverlaySettings? saved = null; window.SettingsChanged += value => saved = value;
-        button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); Assert.Equal("Unlocked", button.Content);
-        Assert.NotNull(saved); Assert.False(saved.Locked);
+        window.ApplySettings(new(Locked: false, Opacity: .8, Scale: 1));
+        Assert.True(grip.IsEnabled); Assert.Equal(.8, window.Opacity);
         window.Close(); Pump(() => window.ClosedTask.IsCompleted);
     });
 
@@ -156,7 +237,7 @@ public sealed class OverlayWindowTests
         window.Close(); Pump(() => window.ClosedTask.IsCompleted);
     });
 
-    private static void Layout(OverlayWindow window)
+    internal static void Layout(OverlayWindow window)
     {
         var content = (FrameworkElement)window.Content;
         for (var i = 0; i < 2; i++)
@@ -165,7 +246,7 @@ public sealed class OverlayWindowTests
             Dispatcher.CurrentDispatcher.Invoke(() => {}, DispatcherPriority.Render);
         }
     }
-    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    internal static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
         {
@@ -173,7 +254,7 @@ public sealed class OverlayWindowTests
             foreach (var descendant in Descendants(child)) yield return descendant;
         }
     }
-    private static void Pump(Func<bool> complete)
+    internal static void Pump(Func<bool> complete)
     {
         var frame = new DispatcherFrame(); var clock = Stopwatch.StartNew();
         var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Background, (_, _) =>
@@ -181,7 +262,7 @@ public sealed class OverlayWindowTests
         try { Dispatcher.PushFrame(frame); Assert.True(complete(), "WPF close did not finish within five seconds."); }
         finally { timer.Stop(); }
     }
-    private static Task Sta(Action action)
+    internal static Task Sta(Action action)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>

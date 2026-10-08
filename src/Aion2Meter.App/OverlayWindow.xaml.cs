@@ -14,18 +14,23 @@ public partial class OverlayWindow : Window
     private readonly Func<OverlaySnapshot> readLatest;
     private readonly Action openSettings;
     private readonly Func<Task> stop;
+    private readonly Action reset;
+    private readonly Action hide;
     private readonly DispatcherTimer refresh = new() { Interval = LiveOverlaySession.RefreshInterval };
     private OverlaySettings settings;
-    private bool closing, allowClose;
+    private bool closing, allowClose, loaded;
     private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task ClosedTask => closed.Task;
     public OverlayViewModel ViewModel { get; } = new();
     public event Action<OverlaySettings>? SettingsChanged;
     public event Action<string>? Diagnostic;
+    public event Action? HiddenByButton;
 
-    public OverlayWindow(OverlaySettings settings, Func<OverlaySnapshot> readLatest, Action openSettings, Func<Task> stop)
+    public OverlayWindow(OverlaySettings settings, Func<OverlaySnapshot> readLatest, Action openSettings, Func<Task> stop, Action? reset = null, Action? hide = null)
     {
         this.settings = settings.Validated(); this.readLatest = readLatest; this.openSettings = openSettings; this.stop = stop;
+        this.reset = reset ?? (() => {});
+        this.hide = hide ?? Hide;
         InitializeComponent(); DataContext = ViewModel; ApplySettings(this.settings);
         refresh.Tick += (_, _) => ViewModel.Apply(readLatest());
         DpiChanged += (_, _) => QueuePlacement();
@@ -35,13 +40,19 @@ public partial class OverlayWindow : Window
     public void ApplySettings(OverlaySettings value)
     {
         settings = value.Validated(); Opacity = settings.Opacity;
+        ViewModel.SetSelfClassOverride(settings.SelfClassOverride);
         Panel.LayoutTransform = new ScaleTransform(settings.Scale, settings.Scale);
-        LockButton.Content = settings.Locked ? "Locked" : "Unlocked";
+        Panel.Width = Math.Min(settings.Width, SystemParameters.WorkArea.Width / settings.Scale);
+        Panel.MinHeight = Math.Min(settings.Height, SystemParameters.WorkArea.Height / settings.Scale);
+        RowsScroll.MaxHeight = Math.Max(80, SystemParameters.WorkArea.Height / settings.Scale - 120);
+        ResizeGrip.IsEnabled = !settings.Locked;
         if (IsLoaded) QueuePlacement();
     }
 
     private void OverlayLoaded(object sender, RoutedEventArgs e)
     {
+        if (closing || loaded) return;
+        loaded = true;
         try { NativeOverlayPlacement.Restore(this, settings.Position); }
         catch (System.ComponentModel.Win32Exception ex) { Diagnostic?.Invoke(ex.Message); }
         ViewModel.Apply(readLatest()); refresh.Start();
@@ -75,10 +86,16 @@ public partial class OverlayWindow : Window
         catch (System.ComponentModel.Win32Exception ex) { Diagnostic?.Invoke(ex.Message); }
         SettingsChanged?.Invoke(settings);
     }
-    private void LockClicked(object sender, RoutedEventArgs e)
+    private void ResizeDragged(object sender, DragDeltaEventArgs e)
     {
-        ApplySettings(settings with { Locked = !settings.Locked }); SettingsChanged?.Invoke(settings);
+        if (settings.Locked) return;
+        ApplySettings(settings with { Width = settings.Width + e.HorizontalChange / settings.Scale,
+            Height = Math.Max(settings.Height, ActualHeight / settings.Scale) + e.VerticalChange / settings.Scale });
     }
+    private void ResizeCompleted(object sender, DragCompletedEventArgs e) => SavePosition();
+    public void ToggleVisibility() { if (IsVisible) Hide(); else Show(); }
+    private void HideClicked(object sender, RoutedEventArgs e) { hide(); HiddenByButton?.Invoke(); }
+    private void ResetClicked(object sender, RoutedEventArgs e) => reset();
     private void SettingsClicked(object sender, RoutedEventArgs e) => openSettings();
     private void CloseClicked(object sender, RoutedEventArgs e) => Close();
 
@@ -90,6 +107,7 @@ public partial class OverlayWindow : Window
         // Even an already-stopped session must let WPF finish its current Closing event.
         await Dispatcher.Yield(DispatcherPriority.Background);
         try { await stop(); }
+        catch (Exception ex) { Diagnostic?.Invoke("Shutdown: " + ex.Message); }
         finally { allowClose = true; Close(); }
     }
     private void OverlayClosed(object? sender, EventArgs e)

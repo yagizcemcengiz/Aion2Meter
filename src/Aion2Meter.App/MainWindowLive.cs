@@ -67,7 +67,7 @@ public partial class MainWindow
     }
     private async void StartLiveClicked(object sender, RoutedEventArgs e)
     {
-        if (busy || closing || engine.IsRunning) return;
+        if (productDiagnostics || busy || closing || engine.IsRunning) return;
         if (SelectedAdapter is not { } adapter || !adapter.IPv4Addresses.Concat(adapter.IPv6Addresses).Any())
         { StatusMessage = "Select an available Ethernet or Wi-Fi capture adapter with a local IP address."; return; }
         busy = true; UpdateControls();
@@ -86,10 +86,12 @@ public partial class MainWindow
     private void ShowOverlayClicked(object sender, RoutedEventArgs e) => ShowOverlay();
     private void ShowOverlay()
     {
-        if (overlay is not null) return;
+        if (productDiagnostics || closing) return;
+        if (overlay is not null) { overlay.Show(); return; }
         var window = new OverlayWindow(overlaySettings, () => liveSession?.Latest ?? OverlaySnapshot.Stopped, () =>
-        { WindowState = WindowState.Normal; Show(); Activate(); }, StopLiveAsync);
+        { WindowState = WindowState.Normal; Show(); Activate(); }, StopLiveAsync, () => liveSession?.ResetCurrent());
         overlay = window;
+        window.HiddenByButton += () => { WindowState = WindowState.Normal; Show(); Activate(); UpdateControls(); };
         window.SettingsChanged += OverlaySettingsChanged;
         window.Diagnostic += message => AddLog("Warning", message);
         window.Closed += (_, _) => { window.SettingsChanged -= OverlaySettingsChanged; if (ReferenceEquals(overlay, window)) overlay = null; UpdateControls(); };
@@ -114,10 +116,10 @@ public partial class MainWindow
     {
         if (!IsInitialized) return;
         var running = liveSession?.IsRunning == true;
-        StartLiveButton.IsEnabled = !busy && !closing && !engine.IsRunning && !running && npcapReady &&
+        StartLiveButton.IsEnabled = !productDiagnostics && !busy && !closing && !engine.IsRunning && !running && npcapReady &&
             SelectedAdapter is { } adapter && adapter.IPv4Addresses.Concat(adapter.IPv6Addresses).Any();
         StopLiveButton.IsEnabled = !busy && !closing && running;
-        ShowOverlayButton.IsEnabled = !closing && liveSession is not null && overlay is null;
+        ShowOverlayButton.IsEnabled = !productDiagnostics && !closing && liveSession is not null && (overlay is null || !overlay.IsVisible);
         Notify(nameof(LiveStatus));
         if (liveSession?.Error is { } error && error != lastLiveError)
         {

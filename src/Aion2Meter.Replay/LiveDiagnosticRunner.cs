@@ -6,7 +6,8 @@ public static class LiveDiagnosticRunner
 {
     /// <summary>Serializes ingestion and periodic snapshots; the source owns native shutdown in iterator finally.</summary>
     public static async Task RunAsync(IPacketSource source, LivePacketPipeline pipeline,
-        Action<IReadOnlyList<LiveEpochSnapshot>> report, TimeSpan interval, CancellationToken cancellationToken = default)
+        Action<IReadOnlyList<LiveEpochSnapshot>> report, TimeSpan interval, CancellationToken cancellationToken = default,
+        Action<SourcePacket>? beforeIngest = null)
     {
         if (interval < TimeSpan.FromMilliseconds(100)) throw new ArgumentOutOfRangeException(nameof(interval));
         try
@@ -26,6 +27,7 @@ public static class LiveDiagnosticRunner
                 {
                     // On cancellation, wait for the pending read before disposing the enumerator.
                     if (!await pending.ConfigureAwait(false)) break;
+                    beforeIngest?.Invoke(packets.Current);
                     pipeline.Ingest(packets.Current);
                     pending = packets.MoveNextAsync().AsTask();
                 }

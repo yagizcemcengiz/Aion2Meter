@@ -10,11 +10,11 @@ namespace Aion2Meter.Tests;
 
 public sealed class PartyMeterTests
 {
-    private static readonly byte[] Uuid = Encoding.ASCII.GetBytes("12345678-1234-5678-9012-123456789012");
+    private static byte[] Uuid(string name) => Encoding.ASCII.GetBytes(new Guid(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(name)).AsSpan(0, 16)).ToString("D"));
     private static byte[] Text(string name) => [checked((byte)Encoding.UTF8.GetByteCount(name)), .. Encoding.UTF8.GetBytes(name)];
     internal static byte[] Identity(uint id = 300, string name = "Remote") => Frame([0x45, 0x36, .. Varint(id), 0, 0, 0, 0, 7, .. Text(name)]);
-    private static byte[] Member(uint id, string name) => [0, 2, .. BitConverter.GetBytes(id), 1, 0, 1, 0, 36, .. Uuid, .. new byte[8], .. Text(name), .. new byte[78]];
-    internal static byte[] Invite(uint id = 300, string name = "Remote") => Frame([0x08, 0x92, 1, 0, 36, .. Uuid, .. new byte[8], .. Varint(id), .. new byte[12], .. Text(name), .. new byte[8]]);
+    private static byte[] Member(uint id, string name) => [0, 2, .. BitConverter.GetBytes(id), 1, 0, 1, 0, 36, .. Uuid(name), .. new byte[8], .. Text(name), .. new byte[78]];
+    internal static byte[] Invite(uint id = 300, string name = "Remote") => Frame([0x08, 0x92, 1, 0, 36, .. Uuid(name), .. new byte[8], .. Varint(id), .. new byte[12], .. Text(name), .. new byte[8]]);
     internal static byte[] Join(uint id = 300, string name = "Remote") => Frame([0x0D, 0x92, .. Member(id, name)]);
     internal static byte[] Leave(bool optional = true, uint selfId = 200, string selfName = "Local") =>
         Frame([0, 0x92, optional ? (byte)8 : (byte)0, .. new byte[24],
@@ -34,9 +34,9 @@ public sealed class PartyMeterTests
     }
 
     [Fact]
-    public void JoinRequiresIndependentNameAndMatchingInvite()
+    public void JoinMembershipWaitsForIndependentActorAndRejectsConflictingName()
     {
-        var h = Fresh(); h.Frame(Invite()); h.Frame(Join()); Assert.Single(h.Tick().Members!);
+        var h = Fresh(); h.Frame(Invite()); h.Frame(Invite()); h.Frame(Join()); Assert.Equal(2, h.Tick().Members!.Count); Assert.Null(Remote(h.Tick()).EntityId);
         h.Frame(Identity()); h.Frame(Join(name: "Wrong")); Assert.Single(h.Tick().Members!);
         h.Frame(Join()); Assert.Equal(2, h.Tick().Members!.Count);
     }

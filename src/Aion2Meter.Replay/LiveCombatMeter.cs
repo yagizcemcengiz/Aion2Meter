@@ -11,8 +11,9 @@ public sealed record LiveMeterSnapshot(string? EpochId, string? CharacterName, u
     LiveIdentityRecoveryMethod RecoveryMethod = LiveIdentityRecoveryMethod.None, DateTimeOffset? IdentityValidFrom = null,
     IReadOnlyList<LiveMeterMemberSnapshot>? Members = null, decimal GroupTotalDamage = 0, PartyRosterSnapshot? PartyRoster = null);
 
-public sealed record LiveMeterMemberSnapshot(ulong EntityId, string CharacterName, bool IsSelf,
-    decimal TotalDamage, decimal? Dps, decimal ContributionPercent, long Hits, bool ActivePartyMember);
+public sealed record LiveMeterMemberSnapshot(ulong? EntityId, string CharacterName, bool IsSelf,
+    decimal TotalDamage, decimal? Dps, decimal ContributionPercent, long Hits, bool ActivePartyMember,
+    string? MembershipKey = null, PlayerClass Class = PlayerClass.Unknown, PlayerClassEvidence? ClassEvidence = null);
 
 /// <summary>Bounded incremental CURRENT accounting. Only Self or independently active party sources extend combat.</summary>
 public sealed class LiveCombatMeter
@@ -23,16 +24,23 @@ public sealed class LiveCombatMeter
     {
         public required LiveEpochSnapshot Snapshot;
         public required PartyRosterResolver Roster;
-        public Dictionary<ulong, (string Name, decimal Total, long Hits)> Participants { get; } = [];
+        public required PlayerProfileDirectory Profiles;
+        public Dictionary<string, (ulong Id, string Name, decimal Total, long Hits, string? Key)> Participants { get; } = [];
+        public Dictionary<string, PlayerClassEvidence> StableClasses { get; } = [];
+        public string? DiagnosticState;
+        public ulong? LastResolvedSelfId;
         public long Self, Other, Unknown, Hits;
         public decimal Total;
         public DateTimeOffset? First, Last;
+        public DateTimeOffset? ResetFrom;
         public bool Active, Invalid, Ended;
         public Queue<ulong> Recent { get; } = [];
     }
     private readonly Dictionary<string, Epoch> epochs = [];
     private readonly TimeSpan idleTimeout;
     private long lastPublication;
+    private string? authorityState;
+    public LiveDiagnosticBuffer Diagnostics { get; } = new();
 
     public LiveCombatMeter(LiveCombatFeed feed, TimeSpan? idleTimeout = null)
     {
@@ -43,6 +51,19 @@ public sealed class LiveCombatMeter
         feed.Published += Include;
         feed.EpochEnded += End;
         feed.RecordPublished += ObserveRecord;
+        feed.ProtocolObserved += (scope, at, tag) => Diagnostics.Protocol(scope, at, tag);
+        feed.InitializationWithheld += (snapshot, record) =>
+        {
+            // Candidate fields explain a rejected refresh; they never become an authoritative binding.
+            var candidates = LocalInitializationExtractor.Extract(record)
+                .Where(c => record.OpcodeCandidate != "3336" || c.NumericRange.Offset == record.PrefixLength + 2)
+                .Take(8).Select(c => new LiveDiagnosticInitializationCandidate(c.EntityId, c.CharacterName,
+                    c.NumericRange.Offset, c.NumericRange.Length, c.NameRange.Offset, c.NameRange.Length)).ToArray();
+            Diagnostics.Record(record.CompletionUtc, "InitializationWithheld", snapshot,
+                "Initialization/refresh withheld by untrusted epoch: " + string.Join("; ", snapshot.Warnings),
+                evidence: Evidence(record), priorSelfRuntimeId: epochs.GetValueOrDefault(snapshot.EpochId)?.LastResolvedSelfId,
+                initializationCandidates: candidates);
+        };
     }
 
     private void Observe(LiveEpochSnapshot snapshot)
@@ -55,24 +76,58 @@ public sealed class LiveCombatMeter
                 if (old.Key is null) throw new InvalidDataException("Live meter epoch bound reached.");
                 epochs.Remove(old.Key);
             }
-            epochs.Add(snapshot.EpochId, epoch = new() { Snapshot = snapshot, Roster = new(snapshot.EpochId) });
+            epochs.Add(snapshot.EpochId, epoch = new() { Snapshot = snapshot, Roster = new(snapshot.EpochId), Profiles = new(snapshot.EpochId) });
+        }
+        var diagnosticState = $"{snapshot.Lifecycle}/{snapshot.BindingStatus}/{snapshot.EntityId}/{snapshot.Gaps}/{snapshot.Conflicts}/" + string.Join(";", snapshot.Warnings);
+        if (epoch.DiagnosticState != diagnosticState)
+        {
+            Diagnostics.Record(DateTimeOffset.UtcNow, "EpochState", snapshot, string.Join("; ", snapshot.Warnings),
+                epoch.Roster.Snapshot(), epoch.Roster.Snapshot(), priorSelfRuntimeId: epoch.LastResolvedSelfId);
+            epoch.DiagnosticState = diagnosticState;
         }
         epoch.Snapshot = snapshot;
+        if (snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved) epoch.LastResolvedSelfId = snapshot.EntityId;
         epoch.Roster.ObserveBinding(snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved ? snapshot.EntityId : null,
             snapshot.CharacterName, snapshot.IdentityValidFrom);
         if (snapshot.Lifecycle == "Faulted")
         {
             epoch.Invalid = true; epoch.Active = false;
             epoch.Total = 0; epoch.Hits = 0; epoch.First = epoch.Last = null; epoch.Recent.Clear();
-            epoch.Participants.Clear(); epoch.Roster.EndEpoch();
+            epoch.Participants.Clear();
+            var before = epoch.Roster.Snapshot();
+            epoch.Roster.SuspendEpoch(DateTimeOffset.UtcNow, "Untrusted transport/binding; runtime suspended, membership evidence retained in retired scope.");
+            Diagnostics.Record(DateTimeOffset.UtcNow, "RuntimeSuspended", snapshot, "Faulted epoch; no eligibility or rows until independent fresh authority.", before, epoch.Roster.Snapshot());
+            epoch.Profiles.Clear();
         }
     }
 
     private void ObserveRecord(string id, RawProtocolRecord record)
     {
         if (epochs.TryGetValue(id, out var e) && !e.Invalid && !e.Ended)
+        {
+            Diagnostics.Protocol(id, record.CompletionUtc, record.OpcodeCandidate);
+            var before = e.Roster.Snapshot();
+            RememberClasses(e, before);
+            if (record.OpcodeCandidate == "3336" && e.Snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved &&
+                e.Snapshot.IdentityValidFrom is { } from && record.TimestampUtc > from &&
+                LocalInitializationExtractor.Extract(record).Any(x => x.EntityId == e.Snapshot.EntityId && x.CharacterName == e.Snapshot.CharacterName))
+            {
+                // Feed only publishes accepted, attested refreshes. This changes remote scene ownership,
+                // never the Self binding or its checkpoint trust rules.
+                e.Roster.RetireRuntime(Evidence(record), "Accepted same-identity 3336 refresh; scene actor evidence retired.");
+                e.Profiles.Clear();
+            }
+            e.Profiles.Observe(record);
             e.Roster.Observe(record, e.Snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved ? e.Snapshot.EntityId : null,
                 e.Snapshot.CharacterName, e.Snapshot.IdentityValidFrom);
+            var after = e.Roster.Snapshot();
+            RememberClasses(e, after);
+            foreach (var key in e.StableClasses.Keys.Where(k => !(after.Memberships ?? []).Any(m => m.Key == k)).ToArray()) e.StableClasses.Remove(key);
+            if (record.OpcodeCandidate != "4536" || !(before.Memberships ?? []).SequenceEqual(after.Memberships ?? []))
+                Diagnostics.Record(record.CompletionUtc, record.OpcodeCandidate == "3336" ? (e.Snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved ? "AcceptedInitialization" : "InitializationAwaitingBinding") : "PartyEvidence",
+                    e.Snapshot, after.Diagnostic ?? (record.OpcodeCandidate == "0092" ? "Authoritative full replacement." :
+                        record.OpcodeCandidate == "1392" ? "Authoritative disband." : "Independent party/profile evidence."), before, after, Evidence(record));
+        }
     }
 
     private void Include(LiveCombatEvent published)
@@ -80,6 +135,7 @@ public sealed class LiveCombatMeter
         if (published.PublicationSequence <= lastPublication) return;
         lastPublication = published.PublicationSequence;
         if (!epochs.TryGetValue(published.EpochId, out var epoch) || epoch.Invalid) return;
+        Diagnostics.Protocol(published.EpochId, published.DamageEvent.Provenance.CompletionTimestamp, published.DamageEvent.Provenance.RecordTag);
         var self = published.Association.Status == DamageEventPlayerAssociationStatus.Self;
         PartyMemberIdentity? member = null;
         switch (published.Association.Status)
@@ -93,6 +149,7 @@ public sealed class LiveCombatMeter
             case DamageEventPlayerAssociationStatus.Unknown: epoch.Unknown++; return;
         }
         if (self) epoch.Self++;
+        if (epoch.ResetFrom is { } reset && published.DamageEvent.Provenance.CompletionTimestamp < reset) return;
         // Completion is the first defensible availability time. A reordered frame can have an earlier
         // first-byte timestamp; logical combat time never runs backwards within a publication scope.
         var time = published.DamageEvent.Provenance.CompletionTimestamp;
@@ -104,7 +161,8 @@ public sealed class LiveCombatMeter
         }
         // Bound distinct participants, including frozen former members, without dropping already
         // counted damage or evicting evidence by an invented age. The next encounter releases them.
-        if (!self && !epoch.Participants.ContainsKey(member!.EntityId) && epoch.Participants.Count >= 15) return;
+        var participantKey = member?.MembershipKey ?? member?.EntityId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!self && !epoch.Participants.ContainsKey(participantKey!) && epoch.Participants.Count >= 15) return;
         epoch.Active = true; epoch.Last = time;
         if (self)
         {
@@ -115,14 +173,33 @@ public sealed class LiveCombatMeter
         }
         else
         {
-            epoch.Participants.TryGetValue(member!.EntityId, out var current);
-            epoch.Participants[member.EntityId] = (member.CharacterName, current.Total + published.DamageEvent.Amount, current.Hits + 1);
+            epoch.Participants.TryGetValue(participantKey!, out var current);
+            epoch.Participants[participantKey!] = (member!.EntityId, member.CharacterName, current.Total + published.DamageEvent.Amount, current.Hits + 1, member.MembershipKey);
         }
     }
 
     private void End(string id)
     {
-        if (epochs.TryGetValue(id, out var epoch)) { epoch.Active = false; epoch.Ended = true; epoch.Roster.EndEpoch(); }
+        if (epochs.TryGetValue(id, out var epoch))
+        {
+            epoch.Active = false; epoch.Ended = true;
+            var before = epoch.Roster.Snapshot();
+            epoch.Roster.SuspendEpoch(DateTimeOffset.UtcNow, "Transport scope ended; no cross-epoch inheritance by name.");
+            Diagnostics.Record(DateTimeOffset.UtcNow, "EpochEnded", epoch.Snapshot, epoch.Snapshot.Lifecycle, before, epoch.Roster.Snapshot());
+            epoch.Profiles.Clear();
+        }
+    }
+
+    /// <summary>Explicit user reset, called on the ingestion owner thread. Identity, roster and deduplication survive.</summary>
+    public void ResetCurrent(DateTimeOffset from)
+    {
+        foreach (var epoch in epochs.Values.Where(e => !e.Ended))
+        {
+            Diagnostics.Record(from, "CurrentReset", epoch.Snapshot, "Combat only; membership and runtime unchanged.", epoch.Roster.Snapshot(), epoch.Roster.Snapshot());
+            epoch.Total = 0; epoch.Hits = 0; epoch.First = epoch.Last = null;
+            epoch.Active = false; epoch.Recent.Clear(); epoch.Participants.Clear();
+            epoch.ResetFrom = epoch.ResetFrom is { } prior && prior > from ? prior : from;
+        }
     }
 
     public LiveMeterSnapshot Snapshot(DateTimeOffset now)
@@ -131,10 +208,23 @@ public sealed class LiveCombatMeter
             if (e.Active && e.Last is { } last && now - last >= idleTimeout) e.Active = false;
         // No arbitrary choice between two simultaneously resolved player scopes.
         var candidates = epochs.Values.Where(e => !e.Ended && e.Snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved).ToArray();
-        if (candidates.Length > 1) return Empty("AMBIGUOUS EPOCHS - Self meter paused");
+        if (candidates.Length > 1)
+        {
+            var state = "Ambiguous: " + string.Join(", ", candidates.Select(e => e.Snapshot.EpochId));
+            if (authorityState != state) Diagnostics.Record(now, "AuthorityAmbiguous", candidates[0].Snapshot, state);
+            authorityState = state;
+            return Empty("AMBIGUOUS EPOCHS - Self meter paused");
+        }
         var epoch = candidates.SingleOrDefault() ?? epochs.Values.LastOrDefault(e => !e.Ended) ?? epochs.Values.LastOrDefault();
         if (epoch is null) return Empty("Waiting for fresh character identity...");
         var s = epoch.Snapshot;
+        var selectedState = s.EpochId + "/" + s.BindingStatus + "/" + epoch.Invalid + "/" + epoch.Ended;
+        if (authorityState != selectedState)
+        {
+            Diagnostics.Record(now, "AuthoritySelected", s, "Previous authority: " + (authorityState ?? "none") + "; selected " + selectedState,
+                after: epoch.Roster.Snapshot());
+            authorityState = selectedState;
+        }
         var elapsed = epoch.First is { } first && epoch.Last is { } stop ? Math.Max(0, (stop - first).TotalSeconds) : 0;
         var status = epoch.Invalid ? "UNTRUSTED - reconnect required" : epoch.Ended ? "STOPPED" :
             s.BindingStatus == CurrentPlayerBindingStatus.Conflict ? "CONFLICT - Self meter paused" :
@@ -149,18 +239,49 @@ public sealed class LiveCombatMeter
         if (s.BindingStatus == CurrentPlayerBindingStatus.Resolved && s.EntityId is { } selfId && s.CharacterName is { } selfName && !epoch.Invalid)
         {
             members.Add(new(selfId, selfName, true, epoch.Total, Rate(epoch.Total), Contribution(epoch.Total, true), epoch.Hits, false));
-            foreach (var id in epoch.Participants.Keys.Concat(roster.ActiveMembers.Select(m => m.EntityId)).Distinct())
+            var membershipByKey = (roster.Memberships ?? []).ToDictionary(m => m.Key);
+            foreach (var key in epoch.Participants.Keys.Concat(membershipByKey.Keys).Distinct())
             {
-                epoch.Participants.TryGetValue(id, out var p);
-                var active = roster.ActiveMembers.FirstOrDefault(m => m.EntityId == id);
-                members.Add(new(id, active?.CharacterName ?? p.Name, false, p.Total, Rate(p.Total), Contribution(p.Total, false), p.Hits, active is not null));
+                epoch.Participants.TryGetValue(key, out var p);
+                membershipByKey.TryGetValue(key, out var membership);
+                var actor = membership?.CurrentRuntimeEntityId;
+                members.Add(new(membership is null ? p.Id : actor, membership?.CharacterName ?? p.Name, false,
+                    p.Total, p.Hits == 0 ? null : Rate(p.Total), Contribution(p.Total, false), p.Hits, membership is not null,
+                    membership?.Key ?? p.Key));
             }
+        }
+        for (var i = 0; i < members.Count; i++)
+        {
+            var member = members[i];
+            var profile = member.EntityId is { } id ? epoch.Profiles.Get(id, member.CharacterName, member.IsSelf, member.IsSelf ? s.IdentityValidFrom : null) : null;
+            if (!member.IsSelf && member.ActivePartyMember && member.MembershipKey is { } key && epoch.StableClasses.TryGetValue(key, out var stable)) profile = stable;
+            members[i] = member with { Class = profile?.Class ?? PlayerClass.Unknown, ClassEvidence = profile };
         }
         return new(s.EpochId, s.CharacterName, s.EntityId, s.BindingStatus, status, epoch.Total, elapsed,
             elapsed >= 0.001 && !epoch.Invalid ? epoch.Total / (decimal)elapsed : null,
             epoch.Hits, epoch.Self, epoch.Other, epoch.Unknown, epoch.Recent.Reverse().ToArray(), Coverage,
             s.Gaps, s.Conflicts, s.DuplicateSegments, s.OverlapBytes, s.UnsupportedCandidates, s.Warnings,
             s.RecoveryMethod, s.IdentityValidFrom, Array.AsReadOnly(members.ToArray()), groupTotal, roster);
+    }
+
+    private static PartyMembershipEvidence Evidence(RawProtocolRecord r) => new(r.SourceCapture, r.OpcodeCandidate,
+        r.OuterFrameOffset, r.StreamOffset, r.CompletionPacketIndex, r.CompletionUtc,
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(r.RawBytes)));
+
+    private static void RememberClasses(Epoch epoch, PartyRosterSnapshot roster)
+    {
+        foreach (var member in roster.ActiveMembers.Where(m => m.MemberUuid is not null && m.OpaqueToken is not null && m.MembershipKey is not null))
+        {
+            var profile = epoch.Profiles.Get(member.EntityId, member.CharacterName, false);
+            if (profile is null) continue;
+            var key = member.MembershipKey!;
+            if (epoch.StableClasses.TryGetValue(key, out var prior))
+            {
+                if (prior.Conflict) continue;
+                if (prior.Class != profile.Class || profile.Conflict) epoch.StableClasses[key] = profile with { Class = PlayerClass.Unknown, Conflict = true };
+            }
+            else if (epoch.StableClasses.Count < 5) epoch.StableClasses[key] = profile;
+        }
     }
 
     private static LiveMeterSnapshot Empty(string status) => new(null, null, null, CurrentPlayerBindingStatus.Unknown,

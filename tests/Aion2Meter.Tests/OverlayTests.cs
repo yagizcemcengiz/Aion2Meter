@@ -122,7 +122,7 @@ public sealed class OverlayTests
         Assert.Same(row, view.Rows[0]); Assert.Equal(0, changes + rowChanges + collectionChanges);
         view.Apply(snapshot with { ElapsedSeconds = 2.3, Rows = Array.AsReadOnly(new[] { snapshot.Rows[0] with { TotalDamage = 12345, Dps = 678.9m } }) });
         Assert.Same(row, view.Rows[0]); Assert.Equal(0, collectionChanges);
-        Assert.Equal("12,345", row.Damage); Assert.Equal("678.9", row.Dps); Assert.Equal("100%", row.Contribution);
+        Assert.Equal("12.3K", row.Damage); Assert.Equal("678.9", row.Dps); Assert.Equal("100%", row.Contribution);
         Assert.Equal("00:02.3", view.Elapsed);
     }
 
@@ -159,7 +159,7 @@ public sealed class OverlayTests
         var expected = new OverlaySettings("stable-id", true, 0.7, 1.25, new(-1400, 30, "Left"));
         await store.SaveAsync(expected); Assert.Equal(expected, store.Load().Settings); Assert.Null(store.Load().Warning);
         using var json = JsonDocument.Parse(File.ReadAllText(temp.Path));
-        Assert.Equal(new[] { "AdapterIdentifier", "Locked", "Opacity", "Scale", "Position" }, json.RootElement.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(new[] { "AdapterIdentifier", "Locked", "Opacity", "Scale", "Position", "Width", "Height", "HideHotkey", "ResetHotkey", "SelfClassOverride" }, json.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.DoesNotContain("Entity", File.ReadAllText(temp.Path)); Assert.DoesNotContain("Character", File.ReadAllText(temp.Path));
         await Task.WhenAll(Enumerable.Range(0, 10).Select(i => store.SaveAsync(expected with { Opacity = 0.5 + i * 0.05 })));
         Assert.Null(store.Load().Warning); Assert.Single(Directory.GetFiles(temp.Directory));
@@ -246,6 +246,22 @@ public sealed class OverlayTests
         while (session.Error is null) await Task.Delay(10, timeout.Token);
         await session.StopAsync(); Assert.True(source.Disposed); Assert.Empty(session.Latest.Rows);
         Assert.Equal(OverlayState.Unavailable, session.Latest.State); Assert.Equal("test source failure", session.Error);
+    }
+
+    [Fact]
+    public async Task ManualResetRunsOnSnapshotOwnerWithoutStoppingOrReopeningSource()
+    {
+        var h = Fresh(); h.Frame(Hit(600)); h.Tick(); var source = new GatedSource(h.Inputs);
+        await using var session = new LiveOverlaySession(source, [LocalAddress], clock: () => h.Now);
+        await source.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (session.Latest.State != OverlayState.InCombat) await Task.Delay(20, timeout.Token);
+        var key = session.Latest.Rows[0].Key; var count = session.SnapshotCount;
+        session.ResetCurrent();
+        while (session.Latest.State != OverlayState.Ready) await Task.Delay(20, timeout.Token);
+        Assert.Equal(key, session.Latest.Rows[0].Key); Assert.Equal(0, session.Latest.Rows[0].TotalDamage);
+        Assert.Equal(0, session.Latest.ElapsedSeconds); Assert.True(session.IsRunning); Assert.False(source.Disposed);
+        Assert.True(session.SnapshotCount > count);
     }
 
     private sealed class GatedSource(IReadOnlyList<SourcePacket> packets) : IPacketSource

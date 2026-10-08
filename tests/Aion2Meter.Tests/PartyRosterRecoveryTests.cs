@@ -62,10 +62,25 @@ public sealed class PartyRosterRecoveryTests
     }
 
     [Fact]
+    public void LaterFullRosterStrengthensStatusIdentityAndKeepsTheSameRowAndInterval()
+    {
+        var h = Fresh(); h.Frame(LivePartyStatusTests.Status()); h.Frame(Identity()); h.Frame(Hit(100, 300));
+        var before = h.Tick(); var row = RemoteRow(before); var from = before.PartyRoster!.ActiveMembers[0].ValidFrom;
+        h.Frame(Roster()); h.Frame(Hit(200, 300)); var after = h.Tick();
+        Assert.Equal(row.MembershipKey, RemoteRow(after).MembershipKey); Assert.Equal(300m, RemoteRow(after).TotalDamage);
+        Assert.Equal(2, after.Members!.Count); var member = Assert.Single(after.PartyRoster!.ActiveMembers);
+        Assert.Equal(from, member.ValidFrom); Assert.Equal("0092", member.Evidence.Tag); Assert.Equal("1B92", member.StatusEvidence!.Tag);
+        Assert.NotNull(member.MemberUuid); Assert.NotNull(member.OpaqueToken);
+        h.Frame(Roster()); var repeated = h.Tick(); Assert.Equal(row.MembershipKey, RemoteRow(repeated).MembershipKey);
+        Assert.Equal(row.MembershipKey, Assert.Single(repeated.PartyRoster!.Memberships!).Key);
+    }
+
+    [Fact]
     public void InitializationRosterWaitsAcrossCheckpointsForSelfAndRemoteIdentity()
     {
         var h = new Harness(); h.Initialize(); h.Handshake(); h.Frame(Roster());
-        Assert.Empty(h.Tick().Members!); h.Bind(); Assert.Single(h.Tick().Members!);
+        Assert.Empty(h.Tick().Members!); h.Bind(); Assert.Equal(2, h.Tick().Members!.Count);
+        Assert.Null(RemoteRow(h.Tick()).EntityId);
         h.Frame(Hit(999, 300)); Assert.Equal(0m, h.Tick().GroupTotalDamage);
         h.Frame(Identity()); var identityAt = h.Now.AddMilliseconds(-10); h.Frame(Hit(100, 300)); var m = h.Tick();
         Assert.Equal(100m, RemoteRow(m).TotalDamage);
@@ -193,7 +208,8 @@ public sealed class PartyRosterRecoveryTests
         var h = Fresh(); h.Frame(Identity()); h.Frame(Invite()); h.Frame(Join()); h.Tick();
         h.Frame(contradiction ? Roster(localName: "Wrong") : Roster(remote: 301, remoteName: "Next"));
         h.Tick(); h.Frame(Join()); h.Frame(Hit(999, 300)); var m = h.Tick();
-        Assert.Empty(m.PartyRoster!.ActiveMembers); Assert.Single(m.Members!); Assert.Equal(0m, m.GroupTotalDamage);
+        Assert.Empty(m.PartyRoster!.ActiveMembers); Assert.DoesNotContain(m.Members!, row => row.EntityId == 300);
+        Assert.Equal(contradiction ? 1 : 2, m.Members!.Count); Assert.Equal(0m, m.GroupTotalDamage);
     }
 
     [Fact]
@@ -239,6 +255,90 @@ public sealed class PartyRosterRecoveryTests
         Assert.Equal(0, resolver.RetainedReplacementMemberCount);
         resolver.Observe(Record(Roster(), 102), null, null, null); resolver.EndEpoch();
         Assert.Equal(0, resolver.RetainedReplacementMemberCount); Assert.Empty(resolver.Snapshot().ActiveMembers);
+    }
+
+    [Fact]
+    public void ProofDiagnosticsDistinguishRosterClaimFromEligibleActorAndStayBounded()
+    {
+        var h = Fresh(); h.Frame(Roster()); var pending = h.Tick();
+        var proof = pending.PartyRoster!.Proofs!;
+        Assert.Equal(1, proof.RosterRecords); Assert.Equal(2, proof.PendingReplacement.Count);
+        Assert.Contains(proof.PendingReplacement, p => p.RosterEntityId == 300 && !p.IndependentIdentityMatches);
+        Assert.Empty(pending.PartyRoster.ActiveMembers); Assert.Equal(2, pending.Members!.Count);
+        Assert.Null(RemoteRow(pending).EntityId); Assert.Null(RemoteRow(pending).Dps);
+        h.Frame(Hit(999, 300)); Assert.Equal(0m, h.Tick().GroupTotalDamage);
+        h.Frame(Identity()); var bound = h.Tick();
+        Assert.Empty(bound.PartyRoster!.Proofs!.PendingReplacement);
+        Assert.Equal(0m, RemoteRow(bound).TotalDamage); // No retroactive attribution.
+        h.Frame(Hit(100, 300)); Assert.Equal(100m, RemoteRow(h.Tick()).TotalDamage);
+        for (var i = 0; i < 50; i++) { h.Frame(Roster()); h.Tick(); }
+        var compact = h.Tick().PartyRoster!.Proofs!;
+        Assert.Equal(51, compact.RosterRecords); Assert.Equal(8, compact.RecentTransitions.Count);
+        Assert.Empty(compact.PendingReplacement); Assert.All(compact.RecentTransitions, t => Assert.Equal("0092", t.Tag));
+        h.Handshake(9000, 19000); h.Bind(); var fresh = h.Tick();
+        Assert.Empty(fresh.PartyRoster!.Proofs!.RecentTransitions); Assert.Equal(0, fresh.PartyRoster.Proofs.RosterRecords);
+        Assert.Single(fresh.Members!); Assert.Equal(0m, fresh.GroupTotalDamage);
+    }
+
+    [Fact]
+    public void SameEpochRefreshRetainsPartyAndAbsenceNeverExpiresMembershipOrAdmitsOther()
+    {
+        var h = Fresh(); Restore(h); var initial = h.Tick(); var member = Assert.Single(initial.PartyRoster!.ActiveMembers);
+        h.Now = h.Now.AddMinutes(10); h.Frame(Frame([0x33, 0x36, .. Varint(200), 5, .. Encoding.UTF8.GetBytes("Local")]));
+        h.Frame(Hit(99999, 999)); var absent = h.Tick();
+        Assert.Empty(absent.PartyRoster!.ActiveMembers);
+        Assert.Equal(member.MembershipKey, Assert.Single(absent.PartyRoster.Memberships!).Key);
+        Assert.Null(RemoteRow(absent).EntityId);
+        Assert.Equal(0m, RemoteRow(absent).TotalDamage); Assert.Equal(0m, absent.GroupTotalDamage);
+        h.Frame(Hit(999, 300)); Assert.Equal(0m, h.Tick().GroupTotalDamage);
+        h.Frame(Identity()); h.Frame(Hit(200, 300)); Assert.Equal(200m, RemoteRow(h.Tick()).TotalDamage);
+        Assert.Equal(2, h.Tick().Members!.Count);
+    }
+
+    [Theory]
+    [InlineData(true)] [InlineData(false)]
+    public void AuthoritativeFarMemberHasNoRuntimeUntilExactLateIdentityAndKeepsItsRow(bool checkpoints)
+    {
+        var h = Fresh(checkpoints: checkpoints); h.Frame(Roster()); var far = h.Tick();
+        var membership = Assert.Single(far.PartyRoster!.Memberships!);
+        Assert.Equal("Remote", membership.CharacterName); Assert.Null(membership.CurrentRuntimeEntityId);
+        Assert.Equal(300UL, membership.RosterEntityIdCandidate); Assert.Empty(far.PartyRoster.ActiveMembers);
+        var vm = new OverlayViewModel(); vm.Apply(OverlaySnapshot.FromMeter(far));
+        var row = Assert.Single(vm.Rows, r => !r.IsSelf);
+        h.Now = h.Now.AddMinutes(3);
+        if (checkpoints) h.Frame(Frame([0x33, 0x36, .. Varint(200), 5, .. Encoding.UTF8.GetBytes("Local")]));
+        h.Frame(Identity(999, "Remote")); h.Frame(Hit(9999, 999)); h.Frame(Hit(9999, 300));
+        var stillFar = h.Tick(); Assert.Equal(0m, stillFar.GroupTotalDamage);
+        Assert.Null(RemoteRow(stillFar).EntityId); Assert.Equal(2, stillFar.Members!.Count);
+        h.Meter.ResetCurrent(h.Now); Assert.Single(h.Tick().PartyRoster!.Memberships!);
+        h.Frame(Identity()); var bound = h.Tick();
+        Assert.Equal(300UL, Assert.Single(bound.PartyRoster!.Memberships!).CurrentRuntimeEntityId);
+        Assert.Equal(0m, RemoteRow(bound).TotalDamage); // Never backfill earlier Other.
+        vm.Apply(OverlaySnapshot.FromMeter(bound)); Assert.Same(row, Assert.Single(vm.Rows, r => !r.IsSelf));
+        h.Frame(Hit(200, 300)); h.Frame(Hit(9999, 999)); var hit = h.Tick();
+        Assert.Equal(200m, hit.GroupTotalDamage); Assert.Equal(1, RemoteRow(hit).Hits);
+        vm.Apply(OverlaySnapshot.FromMeter(hit)); Assert.Same(row, Assert.Single(vm.Rows, r => !r.IsSelf));
+        h.Frame(Leave()); h.Tick(); vm.Apply(OverlaySnapshot.FromMeter(h.Tick()));
+        Assert.Same(row, Assert.Single(vm.Rows, r => !r.IsSelf)); // Frozen counted row keeps stable key.
+        Assert.Empty(h.Tick().PartyRoster!.Memberships!);
+        h.Now = h.Now.AddSeconds(31); h.Frame(Hit(10)); Assert.Single(h.Tick().Members!);
+    }
+
+    [Theory]
+    [InlineData("name")] [InlineData("disband")] [InlineData("epoch")]
+    public void UnresolvedMembershipIsWithdrawnOnConflictTerminationOrFreshEpoch(string transition)
+    {
+        var h = Fresh(); h.Frame(Roster()); Assert.Null(RemoteRow(h.Tick()).EntityId);
+        switch (transition)
+        {
+            case "name": h.Frame(Identity(300, "Wrong")); break;
+            case "unknown-transition": h.Frame(Frame([0x21, 0x92, 0])); break;
+            case "disband": h.Frame(Disband()); break;
+            case "epoch": h.Handshake(9000, 19000); h.Bind(); break;
+        }
+        h.Frame(Identity()); h.Frame(Hit(999, 300)); var m = h.Tick();
+        Assert.Empty(m.PartyRoster!.Memberships!); Assert.Empty(m.PartyRoster.ActiveMembers);
+        Assert.Single(m.Members!); Assert.Equal(0m, m.GroupTotalDamage);
     }
 
     [Fact]

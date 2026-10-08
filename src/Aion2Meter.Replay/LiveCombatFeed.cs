@@ -27,6 +27,8 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     public event Action<LiveCombatEvent>? Published;
     public event Action<string>? EpochEnded;
     internal event Action<string, RawProtocolRecord>? RecordPublished;
+    internal event Action<LiveEpochSnapshot, RawProtocolRecord>? InitializationWithheld;
+    internal event Action<string, DateTimeOffset, string>? ProtocolObserved;
     public long PublishedCount { get; private set; }
     public int RetainedIdentities => states.Values.Sum(s => s.Seen.Count);
     public int RetainedPartyRecordIdentities => states.Values.Sum(s => s.SeenRecords.Count);
@@ -92,7 +94,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         {
             var occurrences = new HashSet<string>();
             foreach (var r in records.Where(r => r.Direction == TrafficDirection.ServerToClient &&
-                r.OpcodeCandidate is "4536" or "0892" or "0D92" or "0092" or "1392" or "2192" or "2F92"))
+                r.OpcodeCandidate is "3336" or "4536" or "1B92" or "0892" or "0D92" or "0092" or "1392" or "2192" or "2F92"))
             {
                 var location = Location(r);
                 var fingerprint = Convert.ToHexString(SHA256.HashData(r.RawBytes));
@@ -112,6 +114,11 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
                 Warnings = [.. snapshot.Warnings, "Publication invalidated; discard this epoch's meter. Fresh reconnect required."] };
         state.WasResolved |= snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved;
         EpochObserved?.Invoke(snapshot);
+        if (records?.LastOrDefault(r => r.Direction == TrafficDirection.ServerToClient) is { } lastRecord)
+            ProtocolObserved?.Invoke(snapshot.EpochId, lastRecord.CompletionUtc, lastRecord.OpcodeCandidate);
+        if (state.Poisoned && records is not null)
+            foreach (var record in records.Where(r => r.Direction == TrafficDirection.ServerToClient && r.OpcodeCandidate is "1536" or "3336").TakeLast(2))
+                InitializationWithheld?.Invoke(snapshot, record);
         if (!state.Poisoned)
         {
             // Membership and combat must advance on one complete-record timeline. Applying the final

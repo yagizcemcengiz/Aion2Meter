@@ -5,13 +5,19 @@ namespace Aion2Meter.Presentation;
 
 public sealed record OverlayPosition(int LeftPixels, int TopPixels, string? Monitor);
 public sealed record OverlaySettings(string? AdapterIdentifier = null, bool Locked = false, double Opacity = 0.92,
-    double Scale = 1, OverlayPosition? Position = null)
+    double Scale = 1, OverlayPosition? Position = null, double Width = 420, double Height = 150,
+    string HideHotkey = "Ctrl+Shift+H", string ResetHotkey = "Ctrl+Shift+R", PlayerClass? SelfClassOverride = null)
 {
     public OverlaySettings Validated() => this with
     {
         AdapterIdentifier = AdapterIdentifier is { Length: > 0 and <= 512 } ? AdapterIdentifier : null,
         Opacity = double.IsFinite(Opacity) ? Math.Clamp(Opacity, 0.5, 1) : 0.92,
         Scale = double.IsFinite(Scale) ? Math.Clamp(Scale, 0.75, 1.5) : 1,
+        Width = double.IsFinite(Width) ? Math.Clamp(Width, 360, 1000) : 420,
+        Height = double.IsFinite(Height) ? Math.Clamp(Height, 150, 1000) : 150,
+        HideHotkey = HotkeyGesture.TryParse(HideHotkey, out var hide) ? hide.Text : "Ctrl+Shift+H",
+        ResetHotkey = HotkeyGesture.TryParse(ResetHotkey, out var reset) ? reset.Text : "Ctrl+Shift+R",
+        SelfClassOverride = SelfClassOverride is { } selected && Enum.IsDefined(selected) && selected != PlayerClass.Unknown ? selected : null,
         Position = Position?.Monitor is { Length: > 512 } ? Position with { Monitor = null } : Position
     };
 

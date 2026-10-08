@@ -30,11 +30,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Task cueTask = Task.CompletedTask;
     private string countdownStatus = "Visual cue only. Perform the game action manually; cue time is not cast time.";
 
-    public MainWindow()
+    private readonly bool productDiagnostics;
+    public MainWindow(bool productDiagnostics = false)
     {
+        this.productDiagnostics = productDiagnostics;
         InitializeComponent();
         DataContext = this;
         InitializeLiveControls();
+        if (productDiagnostics) OverlayLock.IsEnabled = OverlayOpacity.IsEnabled = OverlayScale.IsEnabled = false;
         CaptureDirectory = Path.Combine(FindProjectRoot(), "captures");
         engine.Diagnostic += OnDiagnostic;
         timer.Tick += (_, _) => UpdateStatistics();
@@ -72,7 +75,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
-        await LoadOverlaySettingsAsync();
+        if (!productDiagnostics) await LoadOverlaySettingsAsync();
         if (closing) return;
         await RefreshAsync();
         if (!closing) await RefreshProcessesAsync();
