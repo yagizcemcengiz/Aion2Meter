@@ -72,11 +72,21 @@ public sealed class CurrentPlayerBinding
     public IReadOnlyList<CurrentPlayerBindingEvidence> Evidence { get; }
     public IReadOnlyList<CurrentPlayerBindingEvidence> QualifyingEvidence { get; }
     public IReadOnlyList<string> Diagnostics { get; }
+    public StableCharacterIdentity? StableIdentity { get; }
+    public IReadOnlyList<CurrentPlayerBinding> PreviousBindings { get; }
+    public bool AwaitingActor { get; }
+    public CurrentPlayerBindingEvidence? RetirementEvidence { get; }
+
+    public CurrentPlayerBinding CurrentOnly() => new(Status, Scope, EntityId, CharacterName,
+        CandidateObservedFrom, ValidFrom, ValidUntil, EvidenceCoverageEnd, Evidence, Diagnostics, StableIdentity,
+        awaitingActor: AwaitingActor, retirementEvidence: RetirementEvidence);
 
     public CurrentPlayerBinding(CurrentPlayerBindingStatus status, ReplayConnectionScope? scope,
         ulong? entityId, string? characterName, DateTimeOffset? candidateObservedFrom,
         DateTimeOffset? validFrom, DateTimeOffset? validUntil, DateTimeOffset? evidenceCoverageEnd,
-        IEnumerable<CurrentPlayerBindingEvidence> evidence, IEnumerable<string> diagnostics)
+        IEnumerable<CurrentPlayerBindingEvidence> evidence, IEnumerable<string> diagnostics,
+        StableCharacterIdentity? stableIdentity = null, IEnumerable<CurrentPlayerBinding>? previousBindings = null,
+        bool awaitingActor = false, CurrentPlayerBindingEvidence? retirementEvidence = null)
     {
         if (status == CurrentPlayerBindingStatus.Resolved &&
             (scope is null || entityId is null || characterName is null || validFrom is null))
@@ -88,6 +98,14 @@ public sealed class CurrentPlayerBinding
         CandidateObservedFrom = candidateObservedFrom; ValidFrom = validFrom;
         ValidUntil = validUntil; EvidenceCoverageEnd = evidenceCoverageEnd;
         Evidence = Array.AsReadOnly(evidence.ToArray()); Diagnostics = Array.AsReadOnly(diagnostics.ToArray());
+        StableIdentity = stableIdentity;
+        if (awaitingActor && (status != CurrentPlayerBindingStatus.Unknown || stableIdentity is null))
+            throw new ArgumentException("Awaiting actor requires withheld runtime and an independently attested stable profile.");
+        AwaitingActor = awaitingActor; RetirementEvidence = retirementEvidence;
+        PreviousBindings = Array.AsReadOnly((previousBindings ?? []).ToArray());
+        if (PreviousBindings.Count > 16 || PreviousBindings.Any(b => b.Status != CurrentPlayerBindingStatus.Resolved ||
+            b.Scope != scope || b.ValidUntil is null || b.PreviousBindings.Count != 0))
+            throw new ArgumentException("Runtime history requires bounded, closed intervals in this same proven scope.");
         QualifyingEvidence = Array.AsReadOnly(Status == CurrentPlayerBindingStatus.Resolved
             ? Evidence.Where(e => e.EntityId == EntityId && StringComparer.Ordinal.Equals(e.CharacterName, CharacterName)).ToArray()
             : []);

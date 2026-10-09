@@ -14,10 +14,12 @@ public sealed class ReplayProtocolDecoder
     private readonly HashSet<TrafficDirection> sensitive = [];
     private long captureBudget;
     private bool started;
+    private readonly bool inboundApplicationAuthorityOnly;
 
-    public ReplayProtocolDecoder(ProtocolDecodeLimits? limits = null)
+    public ReplayProtocolDecoder(ProtocolDecodeLimits? limits = null, bool inboundApplicationAuthorityOnly = false)
     {
         this.limits = limits ?? new(); this.limits.Validate();
+        this.inboundApplicationAuthorityOnly = inboundApplicationAuthorityOnly;
     }
 
     // Single-use instances keep resource accounting local to one capture.
@@ -66,6 +68,15 @@ public sealed class ReplayProtocolDecoder
     {
         var index = Add(raw);
         raw = records[index];
+        // Product authority is inbound. Outbound canonical outer frames have no proven
+        // application grammar here: never infer compression or gameplay from their body.
+        // Reassembly, framing, ACK boundaries and privacy are still validated upstream.
+        // Finite research keeps its explicit bidirectional inspection path.
+        if (inboundApplicationAuthorityOnly && raw.Direction == TrafficDirection.ClientToServer)
+        {
+            records[index] = raw with { DecodeStatus = "NonAuthoritativeFrame" };
+            return;
+        }
         var body = raw.RawBytes.AsSpan(raw.PrefixLength);
         if (body.Length >= 2 && body[0] == 0xff && body[1] == 0xff)
         {

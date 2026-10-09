@@ -20,7 +20,8 @@ public sealed record LiveDiagnosticEpoch(string EpochId, LiveDiagnosticConnectio
     IReadOnlyList<ulong> RecentSelfAmounts, int UnsupportedCandidates, int Gaps, int Conflicts,
     int DuplicateSegments, long OverlapBytes, IReadOnlyList<string> Warnings,
     LiveIdentityRecoveryMethod RecoveryMethod, DateTimeOffset? IdentityValidFrom,
-    long DiscardedMidstreamPackets, long DiscardedMidstreamBytes);
+    long DiscardedMidstreamPackets, long DiscardedMidstreamBytes, StableCharacterIdentity? StableIdentity = null, bool AwaitingActor = false,
+    IReadOnlyList<LiveCheckpointDiagnostic>? CheckpointStates = null);
 
 public sealed record LiveDiagnosticSnapshot(string Kind, DateTimeOffset TimestampUtc,
     long MalformedPackets, long UnsupportedPackets, long IgnoredPackets, long RejectedFlows,
@@ -53,7 +54,8 @@ public static class LiveDiagnosticJson
             epoch.SelfCount, epoch.OtherCount, epoch.UnknownCount, epoch.RecentSelfAmounts.ToArray(),
             epoch.UnsupportedCandidates, epoch.Gaps, epoch.Conflicts, epoch.DuplicateSegments,
             epoch.OverlapBytes, epoch.Warnings.ToArray(), epoch.RecoveryMethod, epoch.IdentityValidFrom,
-            epoch.DiscardedMidstreamPackets, epoch.DiscardedMidstreamBytes);
+            epoch.DiscardedMidstreamPackets, epoch.DiscardedMidstreamBytes, epoch.StableIdentity, epoch.AwaitingActor,
+            epoch.CheckpointStates?.ToArray());
     }
 
     private static long? Scope(IPAddress address) => address.AddressFamily == AddressFamily.InterNetworkV6 ? address.ScopeId : null;

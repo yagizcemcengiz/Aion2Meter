@@ -48,7 +48,7 @@ internal sealed class LiveStreamCheckpoint
                 DeclaredSpan = s.DeclaredSpan + shift };
         }).ToArray();
 
-    public void CheckPrivacy(IReadOnlyList<ReassembledStream> streams)
+    public void CheckPrivacy(IReadOnlyList<ReassembledStream> streams, Action<ReassembledStream>? rejected = null)
     {
         foreach (var s in streams)
         {
@@ -56,7 +56,11 @@ internal sealed class LiveStreamCheckpoint
             if (cache.Length == 0) continue;
             var tail = cache.TakeLast(1024).ToArray();
             var withContext = s with { Chunks = [new(Cursor(s.Direction) - tail.Length, tail, default, 0), .. s.Chunks] };
-            if (PayloadPrivacy.IsSensitive(withContext)) throw new InvalidDataException("Sensitive stream material invalidates checkpoint publication.");
+            if (PayloadPrivacy.IsSensitive(withContext))
+            {
+                rejected?.Invoke(s);
+                throw new InvalidDataException("Sensitive stream material invalidates checkpoint publication.");
+            }
         }
     }
 

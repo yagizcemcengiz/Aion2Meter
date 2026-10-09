@@ -68,12 +68,14 @@ public sealed class OverlayTests
     }
 
     [Fact]
-    public void FreshReconnectClearsStaleRowsAndUsesNewScopeEvenForSameEntity()
+    public void FreshReconnectRetainsOnlyStableNameAndUsesNewScopeEvenForSameEntity()
     {
         var h = Fresh(); h.Frame(Hit()); var view = new OverlayViewModel();
         view.Apply(OverlaySnapshot.FromMeter(h.Tick())); var old = Assert.Single(view.Rows);
         h.Handshake(2000, 8000); view.Apply(OverlaySnapshot.FromMeter(h.Tick()));
-        Assert.Empty(view.Rows); Assert.Contains("Waiting", view.Status);
+        var waiting = Assert.Single(view.Rows); Assert.Same(old, waiting);
+        Assert.Equal("Local", waiting.DisplayName); Assert.Equal("0", waiting.Damage); Assert.Equal("—", waiting.Dps);
+        Assert.Contains("Waiting", view.Status); Assert.Null(h.Tick().EntityId);
         h.Bind("Next character"); view.Apply(OverlaySnapshot.FromMeter(h.Tick()));
         var current = Assert.Single(view.Rows); Assert.NotSame(old, current); Assert.NotEqual(old.Key, current.Key);
         Assert.Equal("Next character", current.DisplayName); Assert.Equal("0", current.Damage); Assert.Equal("—", current.Dps);

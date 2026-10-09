@@ -147,10 +147,12 @@ public sealed class ScenePartyLifetimeTests
     }
 
     [Fact]
-    public void FreshTcpOrConflictingSelfNeverInheritsPartyByNameAndExportsSuspension()
+    public void FreshTcpRetainsPartyPresentationWithoutRuntimeAuthorityAndExportsSuspension()
     {
         var h = Three(); h.Handshake(9000, 19000); h.Bind(); h.Frame(Identity(300, "Alpha")); h.Frame(Hit(999, 300));
-        Assert.Single(h.Tick().Members!); Assert.Equal(0m, h.Tick().GroupTotalDamage);
+        Assert.Equal(3, h.Tick().Members!.Count); Assert.Equal(0m, h.Tick().GroupTotalDamage);
+        Assert.All(h.Tick().Members!.Where(m=>!m.IsSelf), m=>Assert.Null(m.EntityId));
+        Assert.Empty(h.Tick().PartyRoster!.ActiveMembers);
         Assert.Contains(h.Meter.Diagnostics.Snapshot(h.Now).Transitions, t => t.Kind == "EpochEnded" && t.MembersAfter == 2 && t.After.All(m => m.RuntimeId is null));
     }
 

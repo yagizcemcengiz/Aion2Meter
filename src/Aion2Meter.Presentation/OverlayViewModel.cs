@@ -58,6 +58,9 @@ public sealed class OverlayRowViewModel : ObservableView
 public sealed class OverlayViewModel : ObservableView
 {
     private readonly ObservableCollection<OverlayRowViewModel> rows = [];
+    // Presentation objects only, never membership or damage authority. A row that
+    // temporarily awaits current-scope proof can reuse its view model on rebind.
+    private readonly Dictionary<string, OverlayRowViewModel> dormantRows = [];
     private OverlaySnapshot? previous;
     private PlayerClass? selfClassOverride;
     private string status = "Waiting for character identity...", hint = "Will recover on the next fresh world connection.",
@@ -104,11 +107,20 @@ public sealed class OverlayViewModel : ObservableView
         var time = TimeSpan.FromSeconds(seconds);
         Elapsed = FormattableString.Invariant($"{(long)time.TotalMinutes:00}:{time.Seconds:00}.{time.Milliseconds / 100}");
         for (var index = rows.Count - 1; index >= 0; index--)
-            if (!snapshot.Rows.Any(r => r.Key == rows[index].Key)) rows.RemoveAt(index);
+            if (!snapshot.Rows.Any(r => r.Key == rows[index].Key))
+            {
+                var hidden = rows[index];
+                if (!dormantRows.ContainsKey(hidden.Key) && dormantRows.Count >= 6) dormantRows.Remove(dormantRows.Keys.First());
+                dormantRows[hidden.Key] = hidden; rows.RemoveAt(index);
+            }
         for (var i = 0; i < snapshot.Rows.Count; i++)
         {
             var row = snapshot.Rows[i]; var found = rows.FirstOrDefault(r => r.Key == row.Key);
-            if (found is null) rows.Insert(i, new(row, selfClassOverride));
+            if (found is null)
+            {
+                if (dormantRows.Remove(row.Key, out var reused)) { reused.Apply(row, selfClassOverride); rows.Insert(i, reused); }
+                else rows.Insert(i, new(row, selfClassOverride));
+            }
             else { found.Apply(row, selfClassOverride); var oldIndex = rows.IndexOf(found); if (oldIndex != i) rows.Move(oldIndex, i); }
         }
     }

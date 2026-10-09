@@ -62,8 +62,9 @@ public sealed class PlayerProfileTests
 
     [Theory]
     [InlineData(0)] [InlineData(7)] [InlineData(8)] [InlineData(11)] [InlineData(36)] [InlineData(45)] [InlineData(uint.MaxValue)]
-    public void UnsupportedCodesRemainUnknown(uint code) =>
-        Assert.Equal(PlayerClass.Unknown, PlayerProfileDecoder.Decode(Record(Profile(code)))!.Class);
+    public void OnlyIndependentlyValidatedAdditionalRemoteCodeIsMapped(uint code) =>
+        Assert.Equal(code == 8 ? PlayerClass.Gladiator : PlayerClass.Unknown,
+            PlayerProfileDecoder.Decode(Record(Profile(code)))!.Class);
 
     [Theory]
     [InlineData("presence")] [InlineData("local-marker")] [InlineData("faction")] [InlineData("utf8")]
@@ -76,7 +77,7 @@ public sealed class PlayerProfileTests
         switch (mutation)
         {
             case "presence": bytes[bodyAt + 4] = 0x17; break;
-            case "local-marker": r = Record(Profile(29, local: true, marker: 0x3F), "3336"); break;
+            case "local-marker": r = Record(Profile(29, local: true, marker: 0x77), "3336"); break;
             case "faction": r = Record(Profile(29, faction: 3)); break;
             case "utf8": bytes[bodyAt + 6] = 0xFF; break;
             case "framing": r = r with { FrameLength = r.FrameLength + 1 }; break;

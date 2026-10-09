@@ -13,4 +13,5 @@ capture_*.json*
 *.suo
 TestResults/
 .tools/
+publish/
 *.log

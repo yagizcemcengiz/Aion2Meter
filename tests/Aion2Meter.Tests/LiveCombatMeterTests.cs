@@ -25,6 +25,7 @@ public sealed class LiveCombatMeterTests
         public uint ServerSequence = 901, ClientSequence = 101;
         public long Index;
         public DateTimeOffset Now = Start;
+        public IPAddress RemoteAddress = Remote;
         public TimeSpan Step = TimeSpan.FromMilliseconds(10);
         public void Initialize()
         {
@@ -36,7 +37,7 @@ public sealed class LiveCombatMeterTests
         {
             Now = Now.Add(Step);
             var packet = Wire(bytes, sequence ?? (server ? ServerSequence : ClientSequence),
-                server, flags, ack ?? (server ? ClientSequence : ServerSequence), port, Now);
+                server, flags, ack ?? (server ? ClientSequence : ServerSequence), port, Now, RemoteAddress);
             var input = new SourcePacket("meter-source", "synthetic", ++Index, packet);
             Inputs.Add(input); Pipeline.Ingest(input);
         }
@@ -438,10 +439,11 @@ public sealed class LiveCombatMeterTests
             ? [0x33, 0x36, .. ReplayProtocolDecoderTests.Varint(id), (byte)name.Length, .. name]
             : [0x15, 0x36, .. little, (byte)name.Length, .. name]);
     }
-    private static CapturedPacket Wire(byte[] bytes, uint sequence, bool server, TcpFlags flags, uint ack, ushort port, DateTimeOffset timestamp)
+    private static CapturedPacket Wire(byte[] bytes, uint sequence, bool server, TcpFlags flags, uint ack, ushort port, DateTimeOffset timestamp, IPAddress? remoteAddress = null)
     {
         var data = new byte[54 + bytes.Length]; TestFiles.Packet(6, timestamp).Data.CopyTo(data, 0);
-        (server ? Remote : Local).GetAddressBytes().CopyTo(data, 26); (server ? Local : Remote).GetAddressBytes().CopyTo(data, 30);
+        var peer = remoteAddress ?? Remote;
+        (server ? peer : Local).GetAddressBytes().CopyTo(data, 26); (server ? Local : peer).GetAddressBytes().CopyTo(data, 30);
         BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(16), (ushort)(40 + bytes.Length));
         BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(34), server ? (ushort)13328 : port);
         BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(36), server ? port : (ushort)13328);

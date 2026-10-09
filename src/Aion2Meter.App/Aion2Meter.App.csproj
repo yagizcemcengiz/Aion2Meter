@@ -8,7 +8,6 @@
   <ItemGroup>
     <!-- WPF owns startup and manifest DPI; Forms is used only for the notification-area component. -->
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
-    <Resource Include="Assets/ClassIcons/*.png" />
     <ProjectReference Include="../Aion2Meter.Core/Aion2Meter.Core.csproj" />
     <ProjectReference Include="../Aion2Meter.Capture/Aion2Meter.Capture.csproj" />
     <ProjectReference Include="../Aion2Meter.Presentation/Aion2Meter.Presentation.csproj" />

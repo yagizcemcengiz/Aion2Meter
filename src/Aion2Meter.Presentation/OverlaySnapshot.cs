@@ -24,6 +24,11 @@ public sealed record OverlaySnapshot(OverlayState State, string Status, string H
     {
         var coverage = meter.Coverage.StartsWith("PARTIAL", StringComparison.OrdinalIgnoreCase) ? "Coverage: Partial" : "Coverage: " + Clean(meter.Coverage);
         OverlaySnapshot EmptyWithCoverage(OverlaySnapshot empty) => empty with { Coverage = coverage, CoverageDetails = meter.Coverage };
+        if (meter.StableIdentity is { } stable && meter.BindingStatus == CurrentPlayerBindingStatus.Unknown && meter.Status.StartsWith("AWAITING ACTOR", StringComparison.Ordinal))
+            return new(OverlayState.Waiting, "Waiting for current actor...", "Character recognized; combat counting is paused.",
+                0, coverage, meter.Coverage, Array.AsReadOnly((meter.Members ?? [new(null, stable.CharacterName, true, 0, null, 0, 0, false, Class: stable.Class)])
+                    .Select((m, i) => new OverlayRow(m.IsSelf ? SelfRowKey(meter) : $"party/{m.MembershipKey}", i + 1,
+                        Clean(m.CharacterName), m.IsSelf, 0, null, 0, 0, m.Class)).ToArray()));
         if (meter.Status.StartsWith("UNTRUSTED", StringComparison.Ordinal) || meter.Status.StartsWith("AMBIGUOUS", StringComparison.Ordinal) ||
             meter.BindingStatus == CurrentPlayerBindingStatus.Conflict)
             return EmptyWithCoverage(Unavailable);
@@ -32,14 +37,22 @@ public sealed record OverlaySnapshot(OverlayState State, string Status, string H
             meter.EntityId is null || string.IsNullOrWhiteSpace(meter.CharacterName)) return EmptyWithCoverage(Waiting);
         var state = meter.Status == "IN COMBAT" ? OverlayState.InCombat :
             meter.Status.StartsWith("IDLE", StringComparison.Ordinal) ? OverlayState.Idle : OverlayState.Ready;
-        var members = meter.Members ?? [new LiveMeterMemberSnapshot(meter.EntityId.Value, meter.CharacterName, true,
+        var members = meter.CurrentMembers ?? meter.Members ?? [new LiveMeterMemberSnapshot(meter.EntityId.Value, meter.CharacterName, true,
             meter.TotalDamage, meter.Dps, 100m, meter.EncounterSelfHits, false)];
         var rows = members.OrderByDescending(m => m.Dps ?? 0m).ThenBy(m => m.CharacterName, StringComparer.Ordinal)
-            .ThenBy(m => m.EntityId).Select((m, index) => new OverlayRow($"{meter.EpochId}/{m.MembershipKey ?? m.EntityId?.ToString(System.Globalization.CultureInfo.InvariantCulture)}", index + 1,
+            .ThenBy(m => m.EntityId).Select((m, index) => new OverlayRow(m.IsSelf ? SelfRowKey(meter) : m.MembershipKey is { } key ? $"party/{key}" : $"{meter.EpochId}/{m.EntityId?.ToString(System.Globalization.CultureInfo.InvariantCulture)}", index + 1,
                 Clean(m.CharacterName), m.IsSelf, m.TotalDamage, m.Dps, m.ContributionPercent, m.Hits, m.Class)).ToArray();
         // Other/Unknown counts are diagnostics, never a source of display rows.
         return new(state, state == OverlayState.InCombat ? "In combat" : state == OverlayState.Idle ? "Last encounter" : "Ready",
             "", meter.EncounterElapsedSeconds, coverage, meter.Coverage, Array.AsReadOnly(rows));
+    }
+
+    private static string SelfRowKey(LiveMeterSnapshot meter)
+    {
+        // Presentation only. Runtime authority still belongs to the independently validated binding.
+        var stable = meter.StableIdentity;
+        var identity = $"{stable?.CharacterName ?? meter.CharacterName}\0{stable?.ServerId?.ToString(System.Globalization.CultureInfo.InvariantCulture)}\0{stable?.FactionCode}";
+        return "self/" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)));
     }
 
     private static string Clean(string value) => string.Concat(value.Where(c => !char.IsControl(c)).Take(128));

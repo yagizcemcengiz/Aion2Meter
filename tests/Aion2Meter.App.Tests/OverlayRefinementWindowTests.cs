@@ -112,23 +112,26 @@ public sealed class OverlayRefinementWindowTests
     });
 
     [Fact]
-    public Task PackagedKnownIconsAreFrozenCachedAndUnknownOrMissingAssetsStayHidden() => Sta(() =>
+    public Task NativeBadgesCoverKnownUnknownAndInvalidClassesWithoutImageResources() => Sta(() =>
     {
-        var window = new OverlayWindow(new(), () => OverlaySnapshot.Stopped, () => {}, () => Task.CompletedTask);
-        var icons = new ClassIconCatalog(); Assert.Null(icons.Get(PlayerClass.Unknown)); Assert.Null(icons.Get((PlayerClass)999));
-        foreach (var playerClass in Enum.GetValues<PlayerClass>().Where(c => c != PlayerClass.Unknown))
-        {
-            var icon = Assert.IsAssignableFrom<ImageSource>(icons.Get(playerClass)); Assert.True(icon.IsFrozen);
-            Assert.Same(icon, icons.Get(playerClass)); Assert.Contains(";component/Assets/ClassIcons/", ClassIconCatalog.ResourceUri(playerClass)!.AbsoluteUri);
-        }
-        var loads = 0; var missing = new ClassIconCatalog(_ => { loads++; throw new FileNotFoundException(); });
-        Assert.Null(missing.Get(PlayerClass.Cleric)); Assert.Null(missing.Get(PlayerClass.Cleric)); Assert.Equal(1, loads);
-        window.Close(); Pump(() => window.ClosedTask.IsCompleted);
+        var expected = new Dictionary<PlayerClass, string> {
+            [PlayerClass.Gladiator] = "GL", [PlayerClass.Templar] = "TE", [PlayerClass.Ranger] = "RA",
+            [PlayerClass.Assassin] = "AS", [PlayerClass.Spiritmaster] = "SP", [PlayerClass.Sorcerer] = "SO",
+            [PlayerClass.Cleric] = "CL", [PlayerClass.Chanter] = "CH", [PlayerClass.Unknown] = "?" };
+        var converter = new ClassBadgeConverter();
+        foreach (var item in expected)
+            Assert.Equal(item.Value, converter.Convert(item.Key, typeof(string), null!, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal("?", ClassBadgeConverter.Label((PlayerClass)999));
+        Assert.Equal("?", converter.Convert("invalid", typeof(string), null!, System.Globalization.CultureInfo.InvariantCulture));
+        using var stream = typeof(OverlayWindow).Assembly.GetManifestResourceStream("Aion2Meter.App.g.resources")!;
+        using var resources = new System.Resources.ResourceReader(stream);
+        foreach (System.Collections.DictionaryEntry resource in resources)
+            Assert.DoesNotContain("assets/classicons/", (string)resource.Key, StringComparison.OrdinalIgnoreCase);
     });
 
     [Theory]
     [InlineData(PlayerClass.Unknown)] [InlineData(PlayerClass.Gladiator)]
-    public Task CompactRowHasCorrectHierarchyBarAndOptionalClassIcon(PlayerClass playerClass) => Sta(() =>
+    public Task CompactRowHasCorrectHierarchyBarAndNativeClassBadge(PlayerClass playerClass) => Sta(() =>
     {
         var snapshot = new OverlaySnapshot(OverlayState.InCombat, "In combat", "", 10, "Coverage: Partial", "",
             Array.AsReadOnly(new[] { new OverlayRow("self", 2, "Local", true, 1400000, 65744, 31.2m, 10, playerClass) }));
@@ -145,11 +148,12 @@ public sealed class OverlayRefinementWindowTests
         var track = bar.Template.FindName("PART_Track", bar) as FrameworkElement;
         var indicator = bar.Template.FindName("PART_Indicator", bar) as FrameworkElement;
         Assert.NotNull(track); Assert.NotNull(indicator); Assert.InRange(indicator.ActualWidth / track.ActualWidth, .30, .32);
-        var image = Assert.Single(tree.OfType<Image>());
-        Assert.Equal(playerClass == PlayerClass.Unknown ? Visibility.Collapsed : Visibility.Visible, image.Visibility);
-        Assert.Equal(playerClass == PlayerClass.Unknown, image.Source is null);
+        var badge = Assert.Single(texts, t => t.Name == "ClassBadge");
+        Assert.Equal(playerClass == PlayerClass.Unknown ? "?" : "GL", badge.Text);
+        Assert.Equal(Visibility.Visible, badge.Visibility);
+        Assert.Empty(tree.OfType<Image>());
         Assert.InRange(bar.ActualHeight, 40, 48);
-        Assert.InRange(image.Width, 18, 24); Assert.Equal(BitmapScalingMode.HighQuality, RenderOptions.GetBitmapScalingMode(image));
+        Assert.Equal(20, badge.Width); Assert.Equal(20, badge.Height);
         window.Close(); Pump(() => window.ClosedTask.IsCompleted);
     });
 
@@ -171,7 +175,9 @@ public sealed class OverlayRefinementWindowTests
         window.ViewModel.Apply(snapshot); Layout(window); var content = (FrameworkElement)window.Content;
         Assert.InRange(content.DesiredSize.Width, width * scale - 1, width * scale + 2);
         var tree = Descendants(content).ToArray(); Assert.Equal(4, tree.OfType<ProgressBar>().Count());
-        Assert.Equal(2, tree.OfType<Image>().Count(i => i.Source is not null));
+        Assert.Empty(tree.OfType<Image>());
+        Assert.Equal(4, tree.OfType<TextBlock>().Count(t => t.Name == "ClassBadge"));
+        Assert.Equal(2, tree.OfType<TextBlock>().Count(t => t.Name == "ClassBadge" && t.Text != "?"));
         foreach (var text in tree.OfType<TextBlock>().Where(t => t.Name is "RowDps" or "RowTotal" or "RowContribution"))
             Assert.True(text.ActualWidth >= text.DesiredSize.Width);
         if (Environment.GetEnvironmentVariable("AION2METER_UI_PREVIEWS") is { Length: > 0 } directory)

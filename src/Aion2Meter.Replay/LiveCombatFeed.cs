@@ -21,6 +21,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         public bool WasResolved;
         public bool Ended;
         public long[] Retired { get; } = new long[2];
+        public long DiagnosticThroughOuter = -1;
     }
     private readonly Dictionary<string, State> states = [];
     public event Action<LiveEpochSnapshot>? EpochObserved;
@@ -29,6 +30,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
     internal event Action<string, RawProtocolRecord>? RecordPublished;
     internal event Action<LiveEpochSnapshot, RawProtocolRecord>? InitializationWithheld;
     internal event Action<string, DateTimeOffset, string>? ProtocolObserved;
+    internal event Action<string, RawCombatCandidate>? UnsupportedCombatObserved;
     public long PublishedCount { get; private set; }
     public int RetainedIdentities => states.Values.Sum(s => s.Seen.Count);
     public int RetainedPartyRecordIdentities => states.Values.Sum(s => s.SeenRecords.Count);
@@ -62,7 +64,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
             states.Add(snapshot.EpochId, state = new());
         }
         if (state.Ended) return !state.Poisoned;
-        var invalid = snapshot.Lifecycle == "Faulted" || state.WasResolved && snapshot.BindingStatus != CurrentPlayerBindingStatus.Resolved;
+        var invalid = snapshot.Lifecycle == "Faulted" || state.WasResolved && snapshot.BindingStatus != CurrentPlayerBindingStatus.Resolved && !snapshot.AwaitingActor;
         state.Poisoned |= invalid;
         var pending = new List<(DamageEvent Event, DamageEventPlayerAssociation Association, string Location, string Fingerprint)>();
         var pendingRecords = new List<(RawProtocolRecord Record, string Location, string Fingerprint)>();
@@ -94,7 +96,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
         {
             var occurrences = new HashSet<string>();
             foreach (var r in records.Where(r => r.Direction == TrafficDirection.ServerToClient &&
-                r.OpcodeCandidate is "3336" or "4536" or "1B92" or "0892" or "0D92" or "0092" or "1392" or "2192" or "2F92"))
+                r.OpcodeCandidate is "1536" or "3336" or "4536" or "1B92" or "0892" or "0D92" or "0092" or "1392" or "2192" or "2F92"))
             {
                 var location = Location(r);
                 var fingerprint = Convert.ToHexString(SHA256.HashData(r.RawBytes));
@@ -105,7 +107,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
                 pendingRecords.Add((r, location, fingerprint));
             }
             if (state.SeenRecords.Keys.Any(key => !occurrences.Contains(key)) ||
-                states.Values.Sum(s => s.SeenRecords.Count) + pendingRecords.Count > maximumEventsPerEpoch)
+                states.Values.Sum(s => s.SeenRecords.Count) + pendingRecords.Count > Math.Max(2, maximumEventsPerEpoch))
                 state.Poisoned = true;
         }
         if (state.Poisoned)
@@ -121,14 +123,23 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
                 InitializationWithheld?.Invoke(snapshot, record);
         if (!state.Poisoned)
         {
+            // Diagnostic-only cursor over complete inbound outer frames. No extra event or
+            // record dedup entries, raw history retention, accounting or authority changes.
+            var diagnosticRecords = (records ?? []).Where(r => r.Direction == TrafficDirection.ServerToClient &&
+                r.OuterFrameOffset > state.DiagnosticThroughOuter).ToArray();
+            var unsupported = diagnosticRecords.Where(r => r.OpcodeCandidate == "0438" && r.DecodeStatus == "UnresolvedCombatCandidate")
+                .Select(CombatCandidateDecoder.Decode).Where(c => c.Status != "Supported").ToArray();
             // Membership and combat must advance on one complete-record timeline. Applying the final
             // roster before a batch of past hits would erase valid pre-leave/rejoin contributions.
             var timeline = pending.Select((p, i) => (Record: OrderingRecord(p.Event), IsCombat: true, Index: i))
                 .Concat(pendingRecords.Select((p, i) => (p.Record, IsCombat: false, Index: i)))
+                .Concat(unsupported.Select((p, i) => (Record: p.RawRecord, IsCombat: false, Index: -i - 1)))
                 .OrderBy(p => p.Record.CompletionUtc).ThenBy(p => p.Record.CompletionPacketIndex)
                 .ThenBy(p => p.Record, ResearchRecordArrivalComparer.Instance);
             foreach (var entry in timeline)
             {
+                if (entry.Index < 0)
+                { UnsupportedCombatObserved?.Invoke(snapshot.EpochId, unsupported[-entry.Index - 1]); continue; }
                 if (!entry.IsCombat)
                 {
                     var record = pendingRecords[entry.Index];
@@ -139,6 +150,7 @@ public sealed class LiveCombatFeed(int maximumEventsPerEpoch = 100_000, int maxi
                 state.Seen.Add(item.Location, (item.Fingerprint, item.Association.Status));
                 Published?.Invoke(new(snapshot.EpochId, item.Event, item.Association, ++PublishedCount, item.Fingerprint));
             }
+            if (diagnosticRecords.Length > 0) state.DiagnosticThroughOuter = diagnosticRecords.Max(r => r.OuterFrameOffset);
         }
         if (state.Poisoned || snapshot.Lifecycle is not ("Active" or "HalfClosed"))
         {

@@ -72,7 +72,7 @@ public sealed class PartyRosterRecoveryTests
         Assert.Equal(from, member.ValidFrom); Assert.Equal("0092", member.Evidence.Tag); Assert.Equal("1B92", member.StatusEvidence!.Tag);
         Assert.NotNull(member.MemberUuid); Assert.NotNull(member.OpaqueToken);
         h.Frame(Roster()); var repeated = h.Tick(); Assert.Equal(row.MembershipKey, RemoteRow(repeated).MembershipKey);
-        Assert.Equal(row.MembershipKey, Assert.Single(repeated.PartyRoster!.Memberships!).Key);
+        Assert.Equal("party-status/300", Assert.Single(repeated.PartyRoster!.Memberships!).Key);
     }
 
     [Fact]
@@ -118,9 +118,9 @@ public sealed class PartyRosterRecoveryTests
     [InlineData("truncated")] [InlineData("trailing")]
     [InlineData("utf8")] [InlineData("mask")] [InlineData("lanes")]
     [InlineData("layout")] [InlineData("slot")] [InlineData("two-without-optional")]
-    public void UnrecognizedOrIncompleteSnapshotWithdrawsEligibility(string mutation)
+    public void UnrecognizedOrIncompleteSnapshotDoesNotMutateTrustedParty(string mutation)
     {
-        var h = Fresh(); Restore(h); Assert.Equal(2, h.Tick().Members!.Count);
+        var h = Fresh(); Restore(h); var before = h.Tick().PartyRoster!; Assert.Equal(2, h.Tick().Members!.Count);
         var body = Body(); const int count = 148, first = 149;
         var second = first + 56 + Encoding.UTF8.GetByteCount("Local") + 78;
         switch (mutation)
@@ -138,8 +138,10 @@ public sealed class PartyRosterRecoveryTests
             case "two-without-optional": body = [.. body[..2], 0, .. body[3..27], .. body[148..]]; break;
         }
         h.Frame(Frame(body)); h.Frame(Hit(999, 300)); var m = h.Tick();
-        Assert.Empty(m.PartyRoster!.ActiveMembers); Assert.Single(m.Members!); Assert.Equal(0m, m.GroupTotalDamage);
+        Assert.Equal(before.Memberships, m.PartyRoster!.Memberships); Assert.Equal(before.ActiveMembers, m.PartyRoster.ActiveMembers);
+        Assert.Equal(2, m.Members!.Count); Assert.Equal(999m, m.GroupTotalDamage);
         Assert.Equal(CurrentPlayerBindingStatus.Resolved, m.BindingStatus); Assert.NotNull(m.PartyRoster.Diagnostic);
+        Assert.Equal("NoMutation", m.PartyRoster.LastLayout!.MutationEffect);
     }
 
     [Theory]
@@ -228,13 +230,14 @@ public sealed class PartyRosterRecoveryTests
 
     [Theory]
     [InlineData(false)] [InlineData(true)]
-    public void PendingSnapshotCannotSurviveDisbandOrFreshEpoch(bool reconnect)
+    public void DisbandRemovesStableRowsButFreshEpochWithholdsOnlyRuntime(bool reconnect)
     {
         var h = Fresh(); h.Frame(Roster()); h.Tick();
         if (reconnect) { h.Handshake(9000, 19000); h.Bind(); }
         else h.Frame(Disband());
         h.Frame(Identity()); h.Frame(Hit(999, 300)); var m = h.Tick();
-        Assert.Empty(m.PartyRoster!.ActiveMembers); Assert.Single(m.Members!); Assert.Equal(0m, m.GroupTotalDamage);
+        Assert.Empty(m.PartyRoster!.ActiveMembers); Assert.Equal(reconnect ? 2 : 1, m.Members!.Count); Assert.Equal(0m, m.GroupTotalDamage);
+        if (reconnect) Assert.Null(RemoteRow(m).EntityId);
     }
 
     [Fact]
@@ -277,7 +280,7 @@ public sealed class PartyRosterRecoveryTests
         Assert.Empty(compact.PendingReplacement); Assert.All(compact.RecentTransitions, t => Assert.Equal("0092", t.Tag));
         h.Handshake(9000, 19000); h.Bind(); var fresh = h.Tick();
         Assert.Empty(fresh.PartyRoster!.Proofs!.RecentTransitions); Assert.Equal(0, fresh.PartyRoster.Proofs.RosterRecords);
-        Assert.Single(fresh.Members!); Assert.Equal(0m, fresh.GroupTotalDamage);
+        Assert.Equal(2, fresh.Members!.Count); Assert.Null(RemoteRow(fresh).EntityId); Assert.Equal(0m, fresh.GroupTotalDamage);
     }
 
     [Fact]
@@ -319,14 +322,15 @@ public sealed class PartyRosterRecoveryTests
         Assert.Equal(200m, hit.GroupTotalDamage); Assert.Equal(1, RemoteRow(hit).Hits);
         vm.Apply(OverlaySnapshot.FromMeter(hit)); Assert.Same(row, Assert.Single(vm.Rows, r => !r.IsSelf));
         h.Frame(Leave()); h.Tick(); vm.Apply(OverlaySnapshot.FromMeter(h.Tick()));
-        Assert.Same(row, Assert.Single(vm.Rows, r => !r.IsSelf)); // Frozen counted row keeps stable key.
+        Assert.DoesNotContain(vm.Rows, r => !r.IsSelf); // CURRENT uses current membership; accounting keeps history.
+        Assert.Equal(200m, RemoteRow(h.Tick()).TotalDamage);
         Assert.Empty(h.Tick().PartyRoster!.Memberships!);
         h.Now = h.Now.AddSeconds(31); h.Frame(Hit(10)); Assert.Single(h.Tick().Members!);
     }
 
     [Theory]
     [InlineData("name")] [InlineData("disband")] [InlineData("epoch")]
-    public void UnresolvedMembershipIsWithdrawnOnConflictTerminationOrFreshEpoch(string transition)
+    public void ConflictTerminationRemoveStableMembershipAndFreshEpochOnlyWithdrawsRuntime(string transition)
     {
         var h = Fresh(); h.Frame(Roster()); Assert.Null(RemoteRow(h.Tick()).EntityId);
         switch (transition)
@@ -338,7 +342,8 @@ public sealed class PartyRosterRecoveryTests
         }
         h.Frame(Identity()); h.Frame(Hit(999, 300)); var m = h.Tick();
         Assert.Empty(m.PartyRoster!.Memberships!); Assert.Empty(m.PartyRoster.ActiveMembers);
-        Assert.Single(m.Members!); Assert.Equal(0m, m.GroupTotalDamage);
+        Assert.Equal(transition == "epoch" ? 2 : 1, m.Members!.Count); Assert.Equal(0m, m.GroupTotalDamage);
+        if (transition == "epoch") Assert.Null(RemoteRow(m).EntityId);
     }
 
     [Fact]

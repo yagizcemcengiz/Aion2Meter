@@ -132,14 +132,17 @@ public sealed class PartyMeterTests
     }
 
     [Fact]
-    public void UnsupportedRosterAndMalformedJoinWithdrawEligibility()
+    public void UnsupportedRosterAndMalformedJoinDoNotMutateTrustedMembership()
     {
         var h = Fresh(); AddMember(h); h.Tick();
-        h.Frame(Frame([0, 0x92, 0, .. new byte[24], 2])); Assert.Empty(h.Tick().PartyRoster!.ActiveMembers);
+        var before = h.Tick().PartyRoster!;
+        h.Frame(Frame([0, 0x92, 0, .. new byte[24], 2])); Assert.Equal(before.ActiveMembers, h.Tick().PartyRoster!.ActiveMembers);
         AddMember(h); h.Tick();
         // Add a trailing byte and a correct outer frame, so the party shape, not transport, rejects it.
         h.Frame(Frame([0x0D, 0x92, .. Member(300, "Remote"), 9]));
-        Assert.Empty(h.Tick().PartyRoster!.ActiveMembers); Assert.Equal(CurrentPlayerBindingStatus.Resolved, h.Tick().BindingStatus);
+        Assert.Equal(before.ActiveMembers, h.Tick().PartyRoster!.ActiveMembers);
+        Assert.Equal("NoMutation", h.Tick().PartyRoster!.LastLayout!.MutationEffect);
+        Assert.Equal(CurrentPlayerBindingStatus.Resolved, h.Tick().BindingStatus);
     }
 
     [Fact]

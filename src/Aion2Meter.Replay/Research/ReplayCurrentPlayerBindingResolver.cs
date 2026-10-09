@@ -3,11 +3,11 @@ using Aion2Meter.Core;
 namespace Aion2Meter.Replay.Research;
 
 /// <summary>Stateless, fail-closed resolver for complete selected fresh replay epochs.</summary>
-public sealed class ReplayCurrentPlayerBindingResolver
+public sealed partial class ReplayCurrentPlayerBindingResolver
 {
     // Internal continuation of a binding attested by this resolver at an irreversible live checkpoint.
     // No public supplied-binding recovery path. Only a same-identity, same-field-layout 3336 refresh
-    // may continue an already attested epoch; 1536, changed assignments and unknown layouts fail closed.
+    // may continue the legacy pair. A complete fixed local profile also attests a new runtime interval.
     internal CurrentPlayerBinding ContinueCheckpoint(CurrentPlayerBinding binding, ResearchCapture capture,
         IReadOnlyList<RawProtocolRecord> records, DateTimeOffset? until)
     {
@@ -21,6 +21,9 @@ public sealed class ReplayCurrentPlayerBindingResolver
         var anchor = binding.QualifyingEvidence.Where(e => e.RecordTag == "3336").ToArray();
         var packets = capture.Packets.ToDictionary(p => p.Segment.PacketIndex);
         var lookup = records.GroupBy(r => r.RecordId).ToDictionary(g => g.Key, g => g.First());
+        if (!invalid && (initialization.Any(r => SelfProfile(r) is not null || PlayerProfileDecoder.DeclaresCrossServerProfile(r)) || binding.StableIdentity is not null && initialization.Length > 0) &&
+            initialization.All(r => ValidProvenance(r, capture, packets, lookup, binding.Scope.ClientSynTimestamp ?? binding.ValidFrom!.Value)))
+            return ResolveSelfProfiles(capture, binding.Scope, initialization, until, binding);
         bool AttestedRefresh(RawProtocolRecord record)
         {
             if (anchor.Length != 1 || record.OpcodeCandidate != "3336" || binding.ValidFrom is not { } from ||
@@ -49,7 +52,8 @@ public sealed class ReplayCurrentPlayerBindingResolver
             binding.Evidence, [status == CurrentPlayerBindingStatus.Resolved
                 ? initialization.Length == 0 ? "Validated fresh-epoch initialization summary retained across ACKed checkpoints."
                     : "Complete same-identity 3336 refresh agrees with attested field layout in this ACKed TCP epoch."
-                : "New initialization or invalid container invalidates checkpoint binding; no heuristic recovery."]);
+                : "New initialization or invalid container invalidates checkpoint binding; no heuristic recovery."],
+            status == CurrentPlayerBindingStatus.Conflict ? null : binding.StableIdentity);
     }
     public CurrentPlayerBinding Analyze(ResearchCapture capture, TcpConnectionSelection connection,
         string? sessionId = null, ProtocolDecodeLimits? limits = null)
@@ -128,6 +132,8 @@ public sealed class ReplayCurrentPlayerBindingResolver
         }
         var left = unique.Values.Where(v => v.Raw.OpcodeCandidate == "1536").ToArray();
         var right = unique.Values.Where(v => v.Raw.OpcodeCandidate == "3336").ToArray();
+        if (right.Any(v => SelfProfile(v.Raw) is not null || PlayerProfileDecoder.DeclaresCrossServerProfile(v.Raw)))
+            return ResolveSelfProfiles(capture, scope, unique.Values.Select(v => v.Raw).ToArray(), Termination(packets));
         if (left.Length == 0 || right.Length == 0) return End(CurrentPlayerBindingStatus.Unknown, "Required complete 1536 + later 3336 pair missing.");
         var pairs = new List<(CurrentPlayerBindingEvidence First, CurrentPlayerBindingEvidence Confirm)>();
         var ambiguous = false; var contradiction = false;

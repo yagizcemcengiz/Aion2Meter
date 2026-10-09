@@ -1,0 +1,9 @@
+<Project>
+  <!-- Keep shared Replay.dll; omit the standalone development/research CLI. -->
+  <Target Name="BetaExcludeReplayCliEntrypoints" BeforeTargets="_HandleFileConflictsForPublish" Condition="'$(MSBuildProjectName)' == 'Aion2Meter.App'">
+    <ItemGroup>
+      <_BetaExcludedReplayCli Include="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.RelativePath)' == 'Aion2Meter.Replay.exe' Or '%(ResolvedFileToPublish.RelativePath)' == 'Aion2Meter.Replay.deps.json' Or '%(ResolvedFileToPublish.RelativePath)' == 'Aion2Meter.Replay.runtimeconfig.json'" />
+      <ResolvedFileToPublish Remove="@(_BetaExcludedReplayCli)" />
+    </ItemGroup>
+  </Target>
+</Project>

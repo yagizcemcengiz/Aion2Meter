@@ -14,6 +14,7 @@ public static class SharedProtocolPipeline
         Enum.GetValues<TrafficDirection>().Select(d => TcpStreamReassembler.Assemble(capture.Packets, d)).ToArray();
 
     internal static SharedProtocolResult DecodeStreams(ResearchCapture capture,
-        IReadOnlyList<ReassembledStream> streams, ProtocolDecodeLimits? limits = null) =>
-        new(streams, new ReplayProtocolDecoder(limits).Decode(capture.Path, streams, capture.OriginUtc));
+        IReadOnlyList<ReassembledStream> streams, ProtocolDecodeLimits? limits = null,
+        bool inboundApplicationAuthorityOnly = false) =>
+        new(streams, new ReplayProtocolDecoder(limits, inboundApplicationAuthorityOnly).Decode(capture.Path, streams, capture.OriginUtc));
 }

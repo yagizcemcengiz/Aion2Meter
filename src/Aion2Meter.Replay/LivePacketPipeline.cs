@@ -18,7 +18,10 @@ public sealed record LiveEpochSnapshot(string EpochId, TcpConnectionSelection Co
     IReadOnlyList<ulong> RecentSelfAmounts, int UnsupportedCandidates, int Gaps, int Conflicts,
     int DuplicateSegments, long OverlapBytes, IReadOnlyList<string> Warnings,
     LiveIdentityRecoveryMethod RecoveryMethod = LiveIdentityRecoveryMethod.None,
-    DateTimeOffset? IdentityValidFrom = null, long DiscardedMidstreamPackets = 0, long DiscardedMidstreamBytes = 0);
+    DateTimeOffset? IdentityValidFrom = null, long DiscardedMidstreamPackets = 0, long DiscardedMidstreamBytes = 0,
+    StableCharacterIdentity? StableIdentity = null, bool AwaitingActor = false,
+    IReadOnlyList<LiveCheckpointDiagnostic>? CheckpointStates = null, DateTimeOffset? IdentityValidUntil = null,
+    DateTimeOffset? PriorIdentityValidUntil = null);
 
 /// <summary>
 /// Single-consumer bounded live foundation. Diagnostic snapshots replace prior results; optional combat
@@ -41,6 +44,8 @@ public sealed class LivePacketPipeline
         public long Bytes;
         public string? Fault;
         public LiveEpochSnapshot? Snapshot;
+        public LiveEpochSnapshot? CheckpointSnapshot;
+        public IReadOnlyList<LiveCheckpointDiagnostic> CheckpointStates = [];
         public LiveStreamCheckpoint Checkpoint { get; } = new();
         public CurrentPlayerBinding? LastBinding;
         public bool WaitingForFreshEpoch;
@@ -65,6 +70,7 @@ public sealed class LivePacketPipeline
     private bool completed;
     private bool midstreamObserved;
     private DateTimeOffset? lastTimestamp;
+    private StableCharacterIdentity? retiredStableProfile;
     public double LastRecomputeMilliseconds { get; private set; }
     public double LastSnapshotMilliseconds { get; private set; }
     public long RecomputeCount { get; private set; }
@@ -243,6 +249,7 @@ public sealed class LivePacketPipeline
         epoch.Fault = reason; epoch.Dirty = true;
         Release(epoch);
         epoch.Checkpoint.Clear();
+        epoch.CheckpointSnapshot = null;
         epoch.LastBinding = null;
     }
 
@@ -255,6 +262,9 @@ public sealed class LivePacketPipeline
     {
         Update(epoch);
         var snapshot = epoch.Snapshot! with { Lifecycle = epoch.Snapshot!.Lifecycle == "Faulted" ? "Faulted" : lifecycle };
+        if (snapshot.BindingStatus == CurrentPlayerBindingStatus.Resolved && snapshot.StableIdentity is { } stable &&
+            snapshot.Lifecycle is "Reset" or "Closed" or "ReplacedByNewHandshake")
+            retiredStableProfile = stable; // No actor or old transport authority crosses the scope boundary.
         ended.Enqueue(snapshot);
         combatFeed?.Observe(snapshot, null);
         while (ended.Count > limits.MaximumConnections) ended.Dequeue();
@@ -276,7 +286,8 @@ public sealed class LivePacketPipeline
             epoch.ClientIsn, epoch.ServerIsn, epoch.Fault is null ? epoch.Closing ? "HalfClosed" : "Active" : "Faulted",
             false, CurrentPlayerBindingStatus.Unknown, null, null, 0, 0, 0, 0, [], 0, gaps, conflicts, 0, 0, [warning],
             epoch.WaitingForFreshEpoch ? LiveIdentityRecoveryMethod.WaitingForFreshEpoch : LiveIdentityRecoveryMethod.None,
-            DiscardedMidstreamPackets: epoch.DiscardedPackets, DiscardedMidstreamBytes: epoch.DiscardedBytes);
+            DiscardedMidstreamPackets: epoch.DiscardedPackets, DiscardedMidstreamBytes: epoch.DiscardedBytes,
+            CheckpointStates: epoch.CheckpointStates);
         void Observe(ReplayDamageEventEpochAdapter? adapter = null, IReadOnlyList<RawProtocolRecord>? records = null)
         {
             if (combatFeed?.Observe(epoch.Snapshot!, adapter, records) == false && epoch.Fault is null)
@@ -298,7 +309,10 @@ public sealed class LivePacketPipeline
             var capture = Capture(epoch);
             var checkpoint = checkpointRetention && epoch.Checkpoint.Binding is not null ? epoch.Checkpoint : null;
             var streams = checkpoint?.Reassemble(capture, epoch.ClientIsn.Value, epoch.ServerIsn.Value) ?? SharedProtocolPipeline.Reassemble(capture);
-            checkpoint?.CheckPrivacy(streams);
+            checkpoint?.CheckPrivacy(streams, stream => epoch.CheckpointStates = [new(stream.Direction.ToString(),
+                checkpoint.Cursor(stream.Direction), checkpoint.Cursor(stream.Direction), stream.Chunks.Sum(c => (long)c.Bytes.Length),
+                "Invalid", "Not evaluated", 0, 0, 0, 0, "SensitiveStream", "Sensitive stream material invalidates checkpoint publication.",
+                IrreversibleInvariant: "Privacy suppression forbids publication/checkpoint.")]);
             var gaps = streams.Sum(s => s.Gaps.Count); var conflicts = streams.Sum(s => s.Conflicts.Count);
             var missingOrigin = streams.Any(s => s.DeclaredSpan != 0 && s.BaseSequence != unchecked(
                 (s.Direction == TrafficDirection.ClientToServer ? epoch.ClientIsn!.Value : epoch.ServerIsn!.Value) + 1));
@@ -310,7 +324,14 @@ public sealed class LivePacketPipeline
                     Fault(epoch, "Conflicting TCP bytes invalidate live publication; fresh reconnect required.");
                     epoch.Dirty = false; epoch.Snapshot = Empty(epoch.Fault!, gaps, conflicts); Observe(); return;
                 }
-                var stable = LivePublicationBoundary.Select(capture, streams, epoch.ClientIsn.Value, epoch.ServerIsn.Value, checkpoint);
+                var priorStates = epoch.CheckpointStates;
+                var states = new List<LiveCheckpointDiagnostic>();
+                var stable = LivePublicationBoundary.Select(capture, streams, epoch.ClientIsn.Value, epoch.ServerIsn.Value, checkpoint, state =>
+                {
+                    states.Add(state with { ResolvedWaiting = priorStates.Any(p => p.Direction == state.Direction && p.State == "Waiting" &&
+                        state.FrameOffset > p.FrameOffset) });
+                    epoch.CheckpointStates = Array.AsReadOnly(states.ToArray());
+                });
                 pendingBytes = stable.Packets.Sum(p => p.Segment.Payload.Length) < capture.Packets.Sum(p => p.Segment.Payload.Length);
                 capture = stable;
                 // The exact shared stack decodes this prefix; no alternate framing or combat grammar.
@@ -319,22 +340,44 @@ public sealed class LivePacketPipeline
             // A later contiguous run after a gap is not independently known to start on a frame boundary.
             if (combatFeed is null && (gaps != 0 || conflicts != 0 || missingOrigin))
             { epoch.Snapshot = Empty("Incomplete/conflicting stream; wait for missing segments. No framing resynchronization.", gaps, conflicts); return; }
-            var shared = SharedProtocolPipeline.DecodeStreams(capture, streams);
-            if (checkpointRetention && shared.Decoded.Records.Any(r => r.DecodeStatus is
-                "Suppressed" or "FailedContainer" or "ContainerWithUnparsedBytes" or "MalformedFraming" or "MalformedInnerFraming"))
-                throw new InvalidDataException("Unvalidated application/container prefix cannot be checkpointed; fresh reconnect required.");
+            var shared = SharedProtocolPipeline.DecodeStreams(capture, streams, inboundApplicationAuthorityOnly: true);
+            var outboundMarker = shared.Decoded.Records.LastOrDefault(r => r.DecodeStatus == "NonAuthoritativeFrame" &&
+                r.RawBytes.Length >= r.PrefixLength + 2 && r.RawBytes[r.PrefixLength] == 255 && r.RawBytes[r.PrefixLength + 1] == 255);
+            if (outboundMarker is not null)
+                epoch.CheckpointStates = Array.AsReadOnly(epoch.CheckpointStates.Concat([
+                    LiveCheckpointDiagnostic.ApplicationFrame(outboundMarker, checkpoint?.Cursor(outboundMarker.Direction) ?? 0,
+                        capture.Packets.Where(p => p.Direction == outboundMarker.Direction).Sum(p => (long)p.Segment.Payload.Length),
+                        "NonAuthoritative", "Canonical ACKed outbound outer frame; body is opaque and cannot publish application events.")]).TakeLast(3).ToArray());
+            var invalidRecord = shared.Decoded.Records.FirstOrDefault(r => r.DecodeStatus is
+                "Suppressed" or "FailedContainer" or "ContainerWithUnparsedBytes" or "MalformedFraming" or "MalformedInnerFraming");
+            if (checkpointRetention && invalidRecord is not null)
+            {
+                var invariant = invalidRecord.DecodeStatus == "Suppressed" ? "Privacy suppression forbids publication/checkpoint." :
+                    "Complete peer-ACKed outer frame failed shared container/application validation; more TCP bytes cannot extend this frame.";
+                var outer = shared.Decoded.Records.First(r => r.Direction == invalidRecord.Direction &&
+                    r.OuterFrameOffset == invalidRecord.OuterFrameOffset && r.ContainerDepth == 0);
+                epoch.CheckpointStates = Array.AsReadOnly(epoch.CheckpointStates.Concat([LiveCheckpointDiagnostic.ApplicationFrame(
+                    outer, checkpoint?.Cursor(invalidRecord.Direction) ?? 0,
+                    capture.Packets.Where(p => p.Direction == invalidRecord.Direction).Sum(p => (long)p.Segment.Payload.Length),
+                    "Invalid",
+                    string.Join("; ", invalidRecord.DecodeWarnings), invariant)]).TakeLast(3).ToArray());
+                throw new InvalidDataException("Unvalidated application/container prefix cannot be checkpointed: " +
+                    invalidRecord.DecodeStatus + " at " + invalidRecord.OuterFrameOffset + "; " + invariant + " " + string.Join("; ", invalidRecord.DecodeWarnings));
+            }
             var closure = epoch.Packets.FirstOrDefault(p => p.Segment.Flags.HasFlag(TcpFlags.Rst));
             if (closure is null && epoch.ClientFin && epoch.ServerFin && FinAcknowledged(epoch, TrafficDirection.ClientToServer) && FinAcknowledged(epoch, TrafficDirection.ServerToClient))
                 closure = epoch.Packets.Last();
             var adapter = ReplayDamageEventEpochAdapter.FromDecoded(capture, epoch.Connection, shared,
                 checkpointBinding: checkpoint?.Binding, closedAt: closure?.Segment.TimestampUtc, closedPacket: closure?.Segment.PacketIndex);
+            if (checkpoint?.Binding is null)
+                adapter = adapter.ValidateCrossServerContinuity(epoch.LastBinding?.StableIdentity ?? retiredStableProfile, shared.Decoded.Records);
             var audit = new ReplayDamageEventBindingAssociator().Analyze(adapter.Events, adapter.Binding, adapter);
             epoch.LastBinding = adapter.Binding;
             var observed = shared.Decoded.Records.Any(r => r.Direction == TrafficDirection.ServerToClient &&
                 r.OpcodeCandidate is "1536" or "3336" && LocalInitializationExtractor.Extract(r).Count != 0) || shared.Decoded.CombatCandidates.Any(c => c.Status == "Supported");
             var warnings = adapter.Binding.Diagnostics.Concat(pendingBytes ? ["Waiting for contiguous complete frames and peer ACK; pending bytes are not published."] : Array.Empty<string>()).Concat(shared.Decoded.Records.Where(r => r.DecodeStatus is
                 "MalformedFraming" or "FailedContainer" or "ContainerWithUnparsedBytes" or "Suppressed").SelectMany(r => r.DecodeWarnings)).Distinct().Take(8).ToArray();
-            var prior = checkpoint is null ? null : epoch.Snapshot;
+            var prior = checkpoint is null ? null : epoch.CheckpointSnapshot;
             epoch.Snapshot = new(epoch.Id, epoch.Connection, epoch.ClientIsn, epoch.ServerIsn,
                 epoch.Closing ? "HalfClosed" : "Active", observed || prior?.ProtocolObserved == true, adapter.Binding.Status, adapter.Binding.EntityId, adapter.Binding.CharacterName,
                 (prior?.AcceptedEvents ?? 0) + adapter.Events.Count, (prior?.SelfCount ?? 0) + audit.SelfCount,
@@ -346,13 +389,16 @@ public sealed class LivePacketPipeline
                 epoch.RetiredOverlap + epoch.CommittedOverlap + shared.Streams.Sum(s => s.OverlapBytes), warnings,
                 adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved
                     ? epoch.StartedAfterMidstream ? LiveIdentityRecoveryMethod.FreshEpochAfterMidstreamStart : LiveIdentityRecoveryMethod.FreshInitialization
-                    : LiveIdentityRecoveryMethod.None, adapter.Binding.ValidFrom);
+                : LiveIdentityRecoveryMethod.None, adapter.Binding.ValidFrom, StableIdentity: adapter.Binding.StableIdentity,
+                AwaitingActor: adapter.Binding.AwaitingActor, CheckpointStates: epoch.CheckpointStates,
+                IdentityValidUntil: adapter.Binding.ValidUntil, PriorIdentityValidUntil: adapter.Binding.PreviousBindings.LastOrDefault()?.ValidUntil);
             Observe(adapter, shared.Decoded.Records);
             if (checkpointRetention && epoch.Fault is null && adapter.Binding.Status == CurrentPlayerBindingStatus.Resolved)
             {
-                epoch.Checkpoint.Binding = adapter.Binding;
+                epoch.Checkpoint.Binding = adapter.Binding.CurrentOnly();
                 var ends = epoch.Checkpoint.Commit(streams);
                 combatFeed!.CommitCheckpoint(epoch.Id, ends);
+                epoch.CheckpointSnapshot = epoch.Snapshot;
                 epoch.CommittedDuplicates += shared.Streams.Sum(s => s.DuplicateSegments);
                 epoch.CommittedOverlap += shared.Streams.Sum(s => s.OverlapBytes);
                 RetainTail(epoch);

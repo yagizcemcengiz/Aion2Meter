@@ -16,7 +16,7 @@ Live DPS · Total Damage · Party Contribution · Automatic Class Detection
 
 ## English
 
-[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.1/Aion2Meter-v0.1.0-beta.1-win-x64.zip)
+[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.2/Aion2Meter-v0.1.0-beta.2-win-x64.zip)
 
 *The Windows x64 beta ZIP includes .NET. Npcap is required separately.*
 
@@ -37,7 +37,7 @@ Aion2Meter uses Npcap to read AION 2 network traffic. Download the installer fro
 
 #### 2. Get the Windows ZIP
 
-**Beta 1 is available.** Use the download button above or visit the [Beta 1 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.1) for release notes and the SHA-256 checksum.
+**Beta 2 is available.** Use the download button above or visit the [Beta 2 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.2) for release notes and the SHA-256 checksum.
 
 Download the Windows x64 ZIP and extract the whole ZIP to a folder. The package includes its .NET runtime; you do not need to install .NET, the .NET SDK or Visual Studio separately. Npcap is still required.
 
@@ -59,16 +59,17 @@ Download the Windows x64 ZIP and extract the whole ZIP to a folder. The package 
 | `DPS` | Damage per second |
 | `%` | Contribution to the party's counted damage |
 | `YOU` | Your character |
-| Class icon | Automatically detected for supported character profiles |
+| Class badge | Native text label for supported character profiles |
 
 A distant party member may temporarily show **0 TOTAL · — DPS · 0%**. This is normal while their current character information is unavailable. The same row updates when sufficient current character and combat information arrives.
 
 ### Features
 
 - Real-time CURRENT DPS, total damage and party contribution for solo and party play.
+- Manual parties formed by Self inviting players, plus live-tested five-player Quick Join / matchmaking groups.
 - Distant party member awareness, with supported join, leave, rejoin and disband handling.
 - Active party membership retained across supported dungeon/scene transitions while character information refreshes.
-- Automatic class detection and icons for validated profiles.
+- Automatic class detection with native text badges for validated profiles.
 - Compact always-on-top overlay with resizing, opacity, scale and position/size lock.
 - CURRENT reset, system tray controls, customizable global hotkeys and an approximate network RTT indicator (`≈ ms`, not exact in-game ping).
 
@@ -93,6 +94,7 @@ Diagnostic exports are bounded local JSON files for troubleshooting. They contai
 
 ### Known Limitations
 
+- Joining an already-existing party may occasionally require a zone/scene refresh before all party members appear.
 - Beta with partial protocol coverage: some combat events may not yet be counted.
 - Boss Meter, overall/dungeon-session totals and healing/HPS are not available yet.
 - Some transitions may still require re-entering the server to recover data.
@@ -101,7 +103,7 @@ Diagnostic exports are bounded local JSON files for troubleshooting. They contai
 
 ### How it works
 
-Aion2Meter passively reads AION 2 network traffic through Npcap and calculates combat statistics locally. It does not read game process memory, inject code, modify game files, send/inject game packets or automate gameplay.
+Aion2Meter passively reads AION 2 network traffic through Npcap and calculates combat statistics locally. It does not read game process memory, inject DLLs/code, use game hooks, modify game files, send/inject game packets, run macros or bypass anti-cheat. It does not automate gameplay.
 
 ---
 
@@ -111,7 +113,7 @@ Aion2Meter passively reads AION 2 network traffic through Npcap and calculates c
 
 AION 2 için Windows üzerinde çalışan hafif, gerçek zamanlı DPS ölçer.
 
-[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.1/Aion2Meter-v0.1.0-beta.1-win-x64.zip)
+[**Download Aion2 DPS Meter**](https://github.com/yagizcemcengiz/Aion2Meter/releases/download/v0.1.0-beta.2/Aion2Meter-v0.1.0-beta.2-win-x64.zip)
 
 *Windows x64 beta ZIP'i .NET içerir. Npcap ayrıca gereklidir.*
 
@@ -132,7 +134,7 @@ Aion2Meter, AION 2'nin ağ trafiğini okuyabilmek için Npcap kullanır. Kurulum
 
 #### 2. Windows ZIP dosyasını indir
 
-**Beta 1 yayımlandı.** Yukarıdaki indirme düğmesini kullan; sürüm notları ve SHA-256 checksum için [Beta 1 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.1) sayfasını ziyaret et.
+**Beta 2 yayımlandı.** Yukarıdaki indirme düğmesini kullan; sürüm notları ve SHA-256 checksum için [Beta 2 release](https://github.com/yagizcemcengiz/Aion2Meter/releases/tag/v0.1.0-beta.2) sayfasını ziyaret et.
 
 Windows x64 ZIP dosyasını indir ve tamamını normal bir klasöre çıkar. Paket .NET çalışma zamanını içerir; ayrıca .NET, .NET SDK veya Visual Studio kurmana gerek yoktur. Npcap yine gereklidir.
 
@@ -154,16 +156,17 @@ Windows x64 ZIP dosyasını indir ve tamamını normal bir klasöre çıkar. Pak
 | `DPS` | Saniye başına hasar |
 | `%` | Partinin sayılan toplam hasarındaki katkı |
 | `YOU` | Senin karakterin |
-| Sınıf ikonu | Desteklenen karakter profillerinde otomatik algılanır |
+| Sınıf badge’i | Desteklenen karakter profillerinde native metin etiketi |
 
 Uzaktaki bir parti üyesi geçici olarak **0 TOTAL · — DPS · 0%** görünebilir. Güncel karakter bilgisi henüz alınmadığında bu normaldir. Yeterli güncel karakter ve savaş bilgisi geldiğinde aynı satır otomatik güncellenir.
 
 ### Özellikler
 
 - Solo ve parti için gerçek zamanlı CURRENT DPS, toplam hasar ve parti katkısı.
+- Self’in oyuncuları davet ederek kurduğu manual party ve live-tested beş kişilik Quick Join / matchmaking grupları.
 - Uzaktaki parti üyelerini takip; desteklenen katılma, ayrılma, yeniden katılma ve parti dağılma işlemleri.
 - Desteklenen dungeon/sahne geçişlerinde karakter bilgisi yenilenirken aktif parti üyeliğinin korunması.
-- Doğrulanmış profiller için otomatik sınıf algılama ve sınıf ikonları.
+- Doğrulanmış profiller için otomatik sınıf algılama ve native metin badge’leri.
 - Her zaman üstte duran kompakt overlay; boyut, saydamlık, ölçek ve konum/boyut kilidi.
 - CURRENT sıfırlama, sistem tepsisi, değiştirilebilir global kısayollar ve yaklaşık ağ RTT göstergesi (`≈ ms`; oyunun kesin ping değeri değildir).
 
@@ -188,6 +191,7 @@ Diagnostic çıktıları hata ayıklama için oluşturulan, boyutu sınırlı ye
 
 ### Bilinen Sınırlamalar
 
+- Mevcut bir partiye davet kabul ederek katılınca tüm üyelerin görünmesi bazen zone/sahne refresh gerektirebilir.
 - Beta ve kısmi protokol desteği: bazı savaş olayları henüz sayılmayabilir.
 - Boss Meter, genel/dungeon oturumu toplamları ve iyileştirme/HPS henüz yok.
 - Bazı geçişlerde verinin tekrar gelmesi için server'a yeniden giriş gerekebilir.

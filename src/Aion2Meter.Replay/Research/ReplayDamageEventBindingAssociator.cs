@@ -20,13 +20,34 @@ public sealed class ReplayDamageEventBindingAssociator
         ReplayDamageEventEpochAdapter? epoch, int inputIndex = 0, bool duplicateInput = false)
     {
         ArgumentNullException.ThrowIfNull(e); ArgumentNullException.ThrowIfNull(binding);
+        if (epoch is not null && binding.PreviousBindings.Count != 0 && ReferenceEquals(binding, epoch.Binding))
+        {
+            // Select an owned interval by confirmation provenance, never by source actor or a name vote.
+            var window = binding.PreviousBindings.Append(binding).Reverse().FirstOrDefault(b =>
+                e.Timestamp >= b.ValidFrom && e.Provenance.CompletionTimestamp >= b.ValidFrom &&
+                (b.ValidUntil is null || e.Provenance.CompletionTimestamp <= b.ValidUntil) &&
+                (b.RetirementEvidence is null || !FollowsConfirmation(e.Provenance, b.RetirementEvidence)) &&
+                b.QualifyingEvidence.Any(c => c.RecordTag == "3336" && FollowsConfirmation(e.Provenance, c)));
+            if (window is not null && !ReferenceEquals(window, binding))
+                return Associate(e, window, epoch, inputIndex, duplicateInput);
+        }
         DamageEventPlayerAssociation Result(DamageEventPlayerAssociationStatus status, string reason) =>
             new(inputIndex, e.Identity, status, binding.Status, binding.EntityId, e.SourceEntityId, epoch?.Scope,
                 e.Timestamp, binding.ValidFrom, binding.ValidUntil, binding.EvidenceCoverageEnd,
                 reason + (duplicateInput ? " Duplicate input identity: occurrence preserved; accounting audit remains separate." : ""), duplicateInput);
         DamageEventPlayerAssociation Unknown(string reason) => Result(DamageEventPlayerAssociationStatus.Unknown, reason);
         if (binding.Status != CurrentPlayerBindingStatus.Resolved) return Unknown("Binding" + binding.Status);
-        if (epoch?.Scope is null || epoch.Binding.Status != CurrentPlayerBindingStatus.Resolved) return Unknown("MissingOrAmbiguousEpoch");
+        if (epoch?.Scope is null || epoch.Binding.Status != CurrentPlayerBindingStatus.Resolved && !epoch.Binding.AwaitingActor)
+            return Unknown("MissingOrAmbiguousEpoch");
+        if (epoch.Binding.PreviousBindings.Count != 0 && !ReferenceEquals(binding, epoch.Binding) &&
+            !epoch.Binding.PreviousBindings.Any(b => ReferenceEquals(b, binding))) return Unknown("UnownedRuntimeInterval");
+        if (binding.RetirementEvidence is { } retirement && FollowsConfirmation(e.Provenance, retirement))
+            return Unknown("AfterRuntimeRetirementOrder");
+        var windows = epoch.Binding.PreviousBindings.Append(epoch.Binding).ToArray();
+        var windowIndex = Array.FindIndex(windows, b => ReferenceEquals(b, binding));
+        if (windowIndex >= 0 && windowIndex + 1 < windows.Length &&
+            windows[windowIndex + 1].QualifyingEvidence.Any(c => c.RecordTag == "3336" && FollowsConfirmation(e.Provenance, c)))
+            return Unknown("AfterRuntimeRetirementOrder");
         if (binding.Scope != epoch.Scope) return Unknown("ScopeMismatch");
         if (!epoch.Contains(e)) return Unknown("UnsupportedEventProvenance");
         var confirmations = binding.QualifyingEvidence.Where(c => c.RecordTag == "3336").ToArray();

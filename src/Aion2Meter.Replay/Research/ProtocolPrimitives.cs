@@ -29,7 +29,9 @@ public static class UnsignedVarint
     }
 }
 
-public sealed record FrameReadResult(bool Success, uint PrefixValue, int PrefixLength, int TotalLength, string? Error);
+public enum FrameReadState { Complete, Waiting, Invalid }
+public sealed record FrameReadResult(bool Success, uint PrefixValue, int PrefixLength, int TotalLength, string? Error,
+    FrameReadState State = FrameReadState.Invalid);
 
 /// <summary>Conservative boundary reader, shared by TCP runs and decompressed containers.</summary>
 public static class ApplicationFraming
@@ -38,12 +40,14 @@ public static class ApplicationFraming
     {
         if (maximumFrameLength < 1) throw new ArgumentOutOfRangeException(nameof(maximumFrameLength));
         var prefix = UnsignedVarint.Read(bytes, 5, uint.MaxValue, requireCanonical: true);
-        if (!prefix.Success) return new(false, 0, prefix.BytesConsumed, 0, prefix.Error);
+        if (!prefix.Success) return new(false, 0, prefix.BytesConsumed, 0, prefix.Error,
+            bytes.Length < 5 && prefix.BytesConsumed == bytes.Length && prefix.Error == "Truncated varint."
+                ? FrameReadState.Waiting : FrameReadState.Invalid);
         var length = (long)prefix.Value + prefix.BytesConsumed - 4;
         if (length < prefix.BytesConsumed || length > maximumFrameLength)
             return new(false, (uint)prefix.Value, prefix.BytesConsumed, 0, "Invalid or over-limit candidate length.");
         if (length > bytes.Length)
-            return new(false, (uint)prefix.Value, prefix.BytesConsumed, (int)length, "Incomplete candidate at run end (gap or capture boundary).");
-        return new(true, (uint)prefix.Value, prefix.BytesConsumed, (int)length, null);
+            return new(false, (uint)prefix.Value, prefix.BytesConsumed, (int)length, "Incomplete candidate at run end (gap or capture boundary).", FrameReadState.Waiting);
+        return new(true, (uint)prefix.Value, prefix.BytesConsumed, (int)length, null, FrameReadState.Complete);
     }
 }

@@ -24,7 +24,8 @@ public sealed class ReplayDamageEventEpochAdapter
         // Generic DamageEvent identity intentionally lacks ISNs. Even an identical location hash from
         // another decode cannot attest to this transport epoch; only this adapter's owned projection can.
         eventOccurrences = Events.ToHashSet<DamageEvent>(ReferenceEqualityComparer.Instance);
-        confirmations = Array.AsReadOnly(binding.QualifyingEvidence.Where(e => e.RecordTag == "3336").ToArray());
+        confirmations = Array.AsReadOnly(binding.PreviousBindings.Append(binding)
+            .SelectMany(b => b.QualifyingEvidence).Where(e => e.RecordTag == "3336").ToArray());
         this.closurePacketIndex = closurePacketIndex;
     }
 
@@ -57,7 +58,19 @@ public sealed class ReplayDamageEventEpochAdapter
             closedPacket ?? ClosurePacket(capture, binding));
     }
 
-    internal bool Contains(DamageEvent e) => Binding.Status == CurrentPlayerBindingStatus.Resolved && eventOccurrences.Contains(e);
+    internal bool Contains(DamageEvent e) => (Binding.Status == CurrentPlayerBindingStatus.Resolved || Binding.PreviousBindings.Count > 0) && eventOccurrences.Contains(e);
+
+    // An internally retained prior stable profile can only restrict new authority, never grant it.
+    internal ReplayDamageEventEpochAdapter ValidateCrossServerContinuity(StableCharacterIdentity? prior,
+        IReadOnlyList<RawProtocolRecord> records)
+    {
+        if (prior is null || Binding.StableIdentity is not { } next ||
+            !records.Any(PlayerProfileDecoder.DeclaresCrossServerProfile) || prior.SameProfileFacts(next)) return this;
+        var rejected = new CurrentPlayerBinding(CurrentPlayerBindingStatus.Conflict, Binding.Scope,
+            null, null, null, null, null, Binding.EvidenceCoverageEnd, Binding.Evidence,
+            ["Cross-server local profile contradicts the independently retained stable character facts; no name-only rebind."]);
+        return new(rejected, Events, Diagnostics, closurePacketIndex);
+    }
 
     internal bool WithinObservedClosure(DamageEvent e) => Binding.ValidUntil is not { } stop ||
         closurePacketIndex is { } index && e.Timestamp <= stop && e.Provenance.CompletionTimestamp <= stop &&

@@ -21,7 +21,7 @@ public sealed class OverlayRowPolishTests
                 i == count, 1240000000 - i * 10000, 65744 - i * 100, count == 1 ? 100 : 100m / count, 2)).ToArray()), 85);
 
     [Fact]
-    public Task MyClassSelectionImmediatelyUpdatesTheSameSelfIconWithoutResetOrStop() => Sta(() =>
+    public Task MyClassSelectionImmediatelyUpdatesTheSameSelfBadgeWithoutResetOrStop() => Sta(() =>
     {
         var snapshot = Snapshot(2); var reset = 0; var stop = 0; var published = 0;
         var window = new OverlayWindow(new(), () => snapshot, () => {}, () => { stop++; return Task.CompletedTask; }, () => reset++);
@@ -30,22 +30,20 @@ public sealed class OverlayRowPolishTests
         preferences.PreferencesChanged += value => { published++; window.ApplySettings(value); preferences.Synchronize(value); };
         var combo = (ComboBox)preferences.FindName("MyClass"); Assert.Equal(9, combo.Items.Count);
         var self = window.ViewModel.Rows[1]; var remote = window.ViewModel.Rows[0];
-        var image = Assert.Single(Descendants((DependencyObject)window.Content).OfType<Image>(), i => ReferenceEquals(i.DataContext, self));
-        var catalog = new ClassIconCatalog();
+        var badge = Assert.Single(Descendants((DependencyObject)window.Content).OfType<TextBlock>(), t => t.Name == "ClassBadge" && ReferenceEquals(t.DataContext, self));
         foreach (var playerClass in Enum.GetValues<PlayerClass>().Where(c => c != PlayerClass.Unknown))
         {
             combo.SelectedValue = playerClass;
             Assert.Equal(playerClass, self.Class); Assert.Equal(PlayerClass.Unknown, remote.Class);
             Assert.Same(self, window.ViewModel.Rows[1]); Assert.Equal("1.24B", self.Damage);
-            Layout(window); Assert.Equal(Visibility.Visible, image.Visibility);
-            Assert.Same(image, Assert.Single(Descendants((DependencyObject)window.Content).OfType<Image>(), i => ReferenceEquals(i.DataContext, self)));
-            Assert.Equal(ClassIconCatalog.ResourceUri(playerClass), Assert.IsType<BitmapImage>(image.Source).UriSource);
-            Assert.True(image.Source.IsFrozen); Assert.Equal(96, Assert.IsType<BitmapImage>(catalog.Get(playerClass)).PixelWidth);
-            Assert.Equal(20, image.Width); Assert.Equal(20, image.Height);
+            Layout(window); Assert.Equal(Visibility.Visible, badge.Visibility);
+            Assert.Same(badge, Assert.Single(Descendants((DependencyObject)window.Content).OfType<TextBlock>(), t => t.Name == "ClassBadge" && ReferenceEquals(t.DataContext, self)));
+            Assert.Equal(ClassBadgeConverter.Label(playerClass), badge.Text);
+            Assert.Equal(20, badge.Width); Assert.Equal(20, badge.Height);
             Assert.Equal(0, reset); Assert.Equal(0, stop);
         }
         Assert.Equal(8, published);
-        combo.SelectedValue = PlayerClass.Unknown; Layout(window); Assert.Null(image.Source); Assert.Equal(Visibility.Collapsed, image.Visibility);
+        combo.SelectedValue = PlayerClass.Unknown; Layout(window); Assert.Equal("?", badge.Text); Assert.Equal(Visibility.Visible, badge.Visibility);
         Assert.Equal(9, published); preferences.Synchronize(new(SelfClassOverride: PlayerClass.Cleric)); Assert.Equal(9, published);
         Assert.Equal(PlayerClass.Cleric, combo.SelectedValue);
         Assert.All(snapshot.Rows, r => Assert.Equal(PlayerClass.Unknown, r.Class));
@@ -106,7 +104,9 @@ public sealed class OverlayRowPolishTests
         window.ViewModel.Apply(snapshot); Layout(window); var content = (FrameworkElement)window.Content;
         var tree = Descendants(content).ToArray();
         Assert.Equal(count, tree.OfType<ProgressBar>().Count());
-        Assert.Single(tree.OfType<Image>(), i => i.Visibility == Visibility.Visible);
+        Assert.Empty(tree.OfType<Image>());
+        Assert.Equal(count, tree.OfType<TextBlock>().Count(t => t.Name == "ClassBadge" && t.Visibility == Visibility.Visible));
+        Assert.Single(tree.OfType<TextBlock>(), t => t.Name == "ClassBadge" && t.Text == "CL");
         var badge = Assert.Single(tree.OfType<TextBlock>(), t => t.Text == "YOU" && ((FrameworkElement)t.Parent).Visibility == Visibility.Visible);
         Assert.True(Assert.IsType<OverlayRowViewModel>(badge.DataContext).IsSelf);
         Assert.Equal(count, window.ViewModel.Rows.Single(r => r.IsSelf).Rank);

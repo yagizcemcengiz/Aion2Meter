@@ -171,8 +171,10 @@ public sealed class LiveCheckpointTests
         }
         h.Add([], server: false, flags: TcpFlags.Fin | TcpFlags.Ack, ack: h.ServerSequence + 1);
         h.Add([], sequence: h.ServerSequence + 1, flags: TcpFlags.Ack, ack: h.ClientSequence + 1);
-        Assert.Equal("Closed", h.Pipeline.Snapshot().Last().Lifecycle); Assert.Equal("STOPPED", h.Tick().Status);
-        Assert.Equal(400m, h.Tick().TotalDamage); Assert.Equal(0, h.Pipeline.VerificationBytes);
+        Assert.Equal("Closed", h.Pipeline.Snapshot().Last().Lifecycle);
+        Assert.StartsWith("AWAITING ACTOR", h.Tick().Status); Assert.Null(h.Tick().EntityId);
+        Assert.Equal(0m, h.Tick().TotalDamage); Assert.Equal("Local", h.Tick().CharacterName);
+        Assert.Equal(0, h.Pipeline.VerificationBytes);
         Assert.Equal(0, h.Pipeline.BindingEvidenceCount); Assert.Equal(0, h.Pipeline.SelectedPacketCount);
     }
 
